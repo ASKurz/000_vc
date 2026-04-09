@@ -1,0 +1,624 @@
+
+{{< include global.qmd >}}
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| message: FALSE
+save_file_folder <- "A08_stan_files"
+# Above: Windows OS refuses folder names that start with numerals.
+dir.create( save_file_folder )
+# RUN FRESH VERSIONS OF SAVED OBJECTS:
+run_fresh <- FALSE 
+
+options(mc.cores = 4)
+```
+
+# Stan {#sec-Stan}
+
+```{=latex}
+{\renewcommand{\thefootnote}{}\footnotetext{\noindent This chapter uses these R packages: \texttt{bayesplot}, \texttt{cmdstanr}, \texttt{dbda3}, \texttt{ggarrow}, \texttt{patchwork}, \texttt{posterior}, \texttt{rstan}, \texttt{tidybayes}, \texttt{tidyverse}, and \texttt{tinytable}.}}
+```
+
+Stan is the name of a software package that creates representative samples of parameter values from a posterior distribution for complex models. The beauty of Stan (like its predecessors, BUGS and JAGS), is that we can specify the structure of a model in a high-level descriptive language, and Stan will automatically generate an MCMC sample from the posterior distribution. Stan primarily uses Hamiltonian Monte Carlo (HMC, @sec-HMC) to create MCMC samples.
+According to the Stan reference manual, Stan is named after Stanislaw Ulam (1909--1984), who was a pioneer of Monte Carlo methods.
+<!-- ^[Stan is not named after the slang term referring to an overenthusiastic or psychotic fanatic, formed by a combination of the words "stalker" and "fan."]  -->
+The name of the software package has also been unpacked as the acronym, Sampling Through Adaptive Neighborhoods [@GelmanCSDVR2013, p. 307], but it is usually written as Stan not STAN.
+
+<!-- Under the hood, Stan operates with the computer programming language C++ and permits great programming flexibility, which is especially useful for unusual or complex models.  -->
+
+The Second Edition of this book [@Kruschke2015book] provided an introduction to Stan, which was fairly new at the time of publication. But the Second Edition focused on a different system for creating posterior samples that was more established at the time, called JAGS [Just Another Gibbs Sampler, @Plummer2003JAGS; @Plummer2017], along with its R packages such as CODA [@PlummerEtAl2006coda] and runjags [@Denwood2016runjags]. JAGS is still a very useful system for conducting Bayesian analyses [for an example of its use, beyond the Second Edition of this book, see the online Supplementary Material of @Kruschke2021BARG at <https://osf.io/aj3dk>]. But since the publication of the Second Edition, the Stan system has had a tremendous surge of development with a wide array of supporting packages in R, and Stan is being widely adopted. Another key reason for adopting Stan is the ability to specify complex models in the simplified syntax of the brms package, which will be introduced in @sec-glm.
+
+
+```{r}
+#| echo: FALSE
+#| label: fig-rstan
+#| fig-cap: "R communicates with Stan via CmdStanR or RStan. We humans interact with R and CmdStanR through RStudio."
+#| fig-height: 1.25
+#| fig-pos: "!tb"
+
+font_size <- 4.5
+
+ggplot() + 
+  coord_fixed() +
+  # RStudio:
+  annotate("rect", 
+           xmin = 0, xmax = 20, 
+           ymin = 0, ymax = 12,
+           fill = bg_color_1, alpha = 1, color = darken(bg_color_1,0.5) ) +
+  annotate("text", 
+           x = 10, 
+           y = 10, 
+           label="RStudio" , size = font_size ) +
+  # Arrows
+  annotate("segment", 
+           x = 5, xend = 23.5, 
+           y = 4+0.5, yend = 4+0.5 ,
+           arrow = arrow(angle = 20, length = unit(0.15, "in"), 
+                         type = "closed") ,
+           linewidth = 1, color = line_color_1 ) +
+  annotate("segment", 
+           x = 23.5, xend = 5, 
+           y = 4-0.5, yend = 4-0.5 ,
+         arrow = arrow(angle = 20, length = unit(0.15, "in"), 
+                       type = "closed") ,
+         linewidth = 1, color = line_color_1 ) +
+  # R
+  annotate("rect", 
+           xmin = 3-2, xmax = 3+2, 
+           ymin = 4-1.5, ymax = 4+1.5, 
+           fill = fill_color_1, alpha = 1, color = line_color_1) + 
+  annotate("text", 
+           x = 3, 
+           y = 4, 
+           label="R" , size = font_size ) +
+  # RStan
+  annotate("rect", 
+           xmin = 14-5, xmax = 14+5, 
+           ymin = 4-3, ymax = 4+3, 
+           fill = fill_color_1, alpha = 1, color = line_color_1) + 
+  annotate("text", 
+           x = 14, 
+           y = 4, 
+           label="CmdStanR\nor RStan" , size = font_size ) +
+  # Stan
+  annotate("rect", 
+           xmin = 27-3.5, xmax = 27+3.5, 
+           ymin = 4-1.5, ymax = 4+1.5, 
+           fill = fill_color_1, alpha = 1, color = line_color_1) +
+  annotate("text", 
+           x = 27, 
+           y = 4, 
+           label="Stan" , size = font_size ) +
+  theme_void()
+```
+
+
+## Stan and its relation to R{#sec-stan_and_r}
+
+Stan is separate from R. Under its hood, Stan is written in the computer language C++, not R. As suggested by @fig-rstan, we communicate with Stan from R via package CmdStanR or RStan, which are libraries of R functions that interface to Stan. One place this distinction between R and Stan appears is when specifying the model structure: The model structure is a string of C++ commands, typed in R but sent to Stan.
+
+
+### Intalling Stan for R
+
+We recommend that before installing Stan, you have the latest versions of R and RStudio installed on you computer. Here is the sequence of steps for installing Stan:
+
+  * Install or update **R**. Go to [https://cran.r-project.org/](https://cran.r-project.org/), find "Download R" for your operating system, then under the next menu find "base".
+
+  * Install or update **RStudio** desktop from [https://posit.co/download/rstudio-desktop/](https://posit.co/download/rstudio-desktop/).
+
+  * For Stan \textit{you must also first install \textbf{Rtools}}. Go to [https://cran.r-project.org/](https://cran.r-project.org/), find "Download R" for your operating system, then under the next menu find "Rtools".
+
+  * Install **CmdStanR**. See [https://mc-stan.org/cmdstanr/articles/cmdstanr.html](https://mc-stan.org/cmdstanr/articles/cmdstanr.html). At the time of this writing, CmdStanR is *not* installed like other packages via CRAN, but has a specialized set of installation commands. Be sure to find the most recent instructions, as vestigial webpages sometimes have outdated information. Stan comes along with CmdStanR, so there is no separate step for installing Stan.
+
+  * Optional but recommended: Install **RStan**. See [https://mc-stan.org/rstan/](https://mc-stan.org/rstan/). You do not need both CmdStanR and RStan. The Stan creators recommend CmdStanR for new projects and new users, with RStan for legacy compatibility. CmdStanR is more actively updated and generally runs faster than RStan.
+  
+  * Update all of your currently installed packages. Use the RStudio tab: Tools $\hookrightarrow$ Check for package updates.
+
+\noindent Website addresses occasionally change, and web pages at large sites such as Stan can become outdated or desynchronized, so you may need to search to find the most updated information. Be sure whatever site you visit is legitimate before downloading anything to your computer. 
+Stan has an ecosystem of satellite R packages that provide additional functionality. We will be working with the packages such as posterior, bayesplot, and tidybayes, among others.
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+# These should all already be loaded, but just in case they're not:
+library(rstan)
+library(cmdstanr)
+# library(posterior)
+# library(bayesplot)
+# library(tidybayes)
+```
+
+
+```{r}
+#| echo: FALSE
+#| label: fig-ModelPicBernBeta
+#| fig-cap: "Diagram of model with Bernoulli likelihood function and beta prior distribution. At the bottom of the diagram, $y_i$ are the dichotomous (0 or 1) data. The lower arrow illustrates Equation \\ref{eq:bernoulli}, the likelihood funtion. The upper arrow illustrates Equation \\ref{eq:beta}, the prior distribution. Every arrow has a corresponding statement in the Stan model specification."
+#| fig-width: 1.5
+#| fig-asp: 2.0
+#| fig-pos: "!tb"
+
+p_beta <-
+  tibble(x = seq(0,1,length=101),
+         d = (dbeta(x, 2, 2)) / max(dbeta(x, 2, 2))) |> 
+  ggplot(aes(x = x, y = d)) +
+  geom_area(fill = fill_color_1 , linewidth = 0) +
+  annotate(geom = "text",
+           x = 0.5, y = 0.2,
+           label = "beta",
+           size = 7) +
+  annotate(geom = "text",
+           x = 0.5, y = 0.6,
+           label = "italic(a)*', '*italic(b)", 
+           size = 7, parse = TRUE) +
+  scale_x_continuous(expand = c(0, 0)) + 
+  theme_void() +
+  theme(axis.line.x = element_line(linewidth = 0.5))
+
+# Arrow details, re-used various places:
+arrow_deets <- arrow(angle = 20, length = unit(0.35, "cm"), type = "closed")
+
+arrow_tilde <-
+  tibble(x    = 0.5,
+         y    = 1,
+         xend = 0.5,
+         yend = 0) |>
+  ggplot(aes(x = x, xend = xend,
+             y = y, yend = yend)) +
+  geom_segment(arrow = arrow_deets) +
+  annotate(geom = "text",
+           x = 0.375, y = 0.33,
+           label = "'~'",
+           size = 10, parse = T) +
+  xlim(0, 1) + 
+  theme_void()
+
+
+p_bern <-
+  tibble(x = 0:1,
+         d = (dbinom(x, size = 1, prob = .6)) / max(dbinom(x, size = 1, prob = .6))) |> 
+  ggplot(aes(x = x, y = d)) +
+  geom_col(fill = fill_color_1 , width = .4) +
+  annotate(geom = "text",
+           x = 0.5, y = 0.2,
+           label = "bernoulli",
+           size = 7) +
+  annotate(geom = "text",
+           x = 0.5, y = 0.92,
+           label = "theta", 
+           size = 7, parse = TRUE) +
+  xlim(-0.75, 1.75) + 
+  theme_void() +
+  theme(axis.line.x = element_line(linewidth = 0.5))
+
+
+arrow_tilde_i <-
+  tibble(x     = c(0.375, 0.60),
+         y     = c(0.33, 0.45),
+         label = c("'~'", "italic(i)")) |> 
+  ggplot(aes(x = x, y = y, label = label)) +
+  geom_text(size = c(10, 7), parse = TRUE ) +
+  geom_segment(x = 0.5, xend = 0.5,
+               y = 1, yend = 0,
+               arrow = arrow_deets) +
+  xlim(0, 1) + 
+  theme_void()
+
+text_y_i <-
+  tibble(x     = 1,
+         y     = 0.5,
+         label = "italic(y[i])") |> 
+  ggplot(aes(x = x, y = y, label = label)) +
+  geom_text(size = 7, parse = TRUE ) +
+  xlim(0, 2) + 
+  theme_void()
+
+layout <- c(
+  area(t = 1, b = 2, l = 1, r = 1), # p_beta
+  area(t = 3, b = 3, l = 1, r = 1), # arrow_tilde
+  area(t = 4, b = 5, l = 1, r = 1), # p_bern
+  area(t = 6, b = 6, l = 1, r = 1), # arrow_tilde_i
+  area(t = 7, b = 7, l = 1, r = 1)  # text_y_i
+)
+## Check layout:
+# plot(layout)
+
+( p_beta + arrow_tilde + p_bern + arrow_tilde_i + text_y_i ) + 
+  plot_layout(design = layout) &
+  ylim(0, 1)
+```
+
+
+## Model notation, diagrams, and Stan {#sec-ModelDiagramStan}
+
+A model consists of a likelihood function, which specifies the probability of data given the parameter values, and a prior distribution, which specifies the probability of candidate parameter values before taking into account the new data. The concept of model was discussed extensively in @sec-ModelDiagramIntro. Recall from @sec-ModelDiagramIntro that the model with a Bernoulli likelihood function and beta prior distribution can be denoted in sampling notation as
+\begin{align}
+y_i &\sim \mbox{bernoulli}( \theta ) \label{eq:bernoulli} \\
+\theta &\sim \mbox{beta}( a , b ) \label{eq:beta}
+\end{align}
+These expressions will be reflected in Stan code, as will be explained soon.
+
+Also recall from @sec-ModelDiagramIntro that the relationships among variables in the sampling notation can be illustrated in the diagram shown in @fig-ModelPicBernBeta. Diagrams like the one in @fig-ModelPicBernBeta are very useful for two important reasons:
+
+  * Model diagrams help with conceptual clarity, especially as we deal with more complex models. The diagrams capture the conceptual dependencies among data and parameters without getting bogged down with details of the mathematical formulas for the distributions. Although Equations \ref{eq:bernoulli} and \ref{eq:beta} fully specify relations of the variables in the model, the diagram spatially connects the corresponding variables so that it is easy to visually comprehend the chain of dependencies among variables.
+  
+  * Model diagrams, and their corresponding sampling notation, can help to specify the models in computer code. In Stan (and JAGS/BUGS) model definitions, there is typically a 1-to-1 correspondence of arrows in the model diagram with lines in the model specification. An example is shown in the next section.
+
+## A complete example {#sec-stan_intro_example}
+
+
+### Specify the data values {#sec-stan_intro_example_data}
+<!-- \vspace{1ex}\noindent -->
+<!-- **Specify the data.**  -->
+
+Data analysis begins with the data. Because the Stan model will use the data, we first must establish the names and format of the data variables. We will name the vector of $y_i$ values as `y` in R, and we will name the constant $N$ as `n` in R. These are put into a list in R, that we will name `data_list`, and which will be used as input to a subsequent function. For our example, we construct artificial data with an arbitrary number of heads and tails, coded as 1's and 0's (not 'H' and 'T') because they will be modeled by a Bernoulli likelihood.
+```{r}
+y <- c(rep(1, times = 10), rep(0, times = 40))
+data_list <- list(y = y, n = length(y))
+```
+\noindent The object, `data_list`, will subsequently be sent to Stan.
+
+### Specify the Stan model {#sec-stan_intro_example_model}
+<!-- \vspace{1ex}\noindent -->
+<!-- **Specify the Stan model.** -->
+
+Now we specify the model of @fig-ModelPicBernBeta for Stan. Starting at the bottom of the diagram, we need to declare the structure of the data. The $y_i$ data values are integers (i.e., 0 and 1) that will be elements of a vector variable named `y` in Stan. The vector has length $N$, named in the script below as the variable `n`. These variable names must match the names of the data in the `data_list` above. To declare these data variables for the model in Stan, we specify a "program block" beginning with the keyword, `data`:
+```{r}
+#| eval: false
+data {
+  int<lower=0> n;                    // Integer non-negative constant
+  array[n] int<lower=0, upper=1> y;  // Integer vector of length `n`
+}
+```
+\noindent The keyword `int` declares an integer variable, and the suffix `<lower=0>` specifies its lower bound. The variable `n` must be declared before it is used as part of `array[n]` in the next line. The keyword `array[n]` declares a one-dimensional array of length `n`, which contains integer values of 0's and 1's, and is named `y`.
+
+Importantly, the specification shown above is *not* R code. It will be enclosed inside quotes and stored as a character string in R, then parsed by CmdStanR (or RStan) and transmitted to Stan as C++ code. Because it will be processed in Stan as C++, not R, lines end with "`;`" and comments are indicated with "`//`". Note also that the `data` block only specifies the *structure* of data, not the actual values of the data. The actual values will be specified separately.
+
+Moving up the model diagram in @fig-ModelPicBernBeta, we need to tell Stan about the arrowed dependencies. These are specified in a program block beginning with the keyword, `model`. It contains statements corresponding to the sampling notation for prior and likelihood in Equations \ref{eq:bernoulli} and \ref{eq:beta}. The Stan model specification is as follows:
+```{r}
+#| eval: false
+model {
+  theta ~ beta(1, 1);    // Prior
+  y ~ bernoulli(theta);  // Likelihood
+}
+```
+\noindent The key point to notice is how easy it is to express the model, using code statements that closely mimic the sampling notation and the diagram. In the code above, the beta prior distribution is specified with generic noncommittal shape constants, $a=1$ and $b=1$, but these could be any desired values. In the specification of the likelihood function, the data variable, `y`, was declared previously in the `data` program block. 
+
+The data and model blocks are not enough, however, because we have not yet specified the nature of the parameter. We need to explicitly tell Stan that  `theta` is a real-valued parameter (real in the mathematical sense, as distinct from integer or logical, etc.) with range 0 to 1. This is done is a program block with keyword, `parameters`. Here is the complete model specification, with the program blocks in the required order such that the `model` block comes *after* the `data` and `parameters` are declared:
+```{r}
+model_spec <- "
+  data {
+    int<lower=0> n;                    // Integer non-negative constant
+    array[n] int<lower=0, upper=1> y;  // Integer vector of length `n`
+  }
+  parameters {
+    real<lower=0, upper=1> theta;  // Real value in [0, 1]
+  }
+  model {
+    theta ~ beta(1, 1);    // Prior
+    y ~ bernoulli(theta);  // Likelihood
+  }
+"  # Close quote of `model_spec`
+```
+\noindent Notice above that `model_spec` is a string specified in R, enclosed in quotes. It is important that the closing quote is placed on the next line *after* the final curly brace, `}`. In this R code, after the closing quote there is a comment *in R* indicating that the isolated final quote acts to close `model_spec`. This comment is marked by `#` because it is processed by R. However, the *content* of `model_spec` will be sent to Stan and processed by Stan as C++ code. Therefore comments inside `model_spec` are marked by `//`, which is how comments are indicated in C++.
+
+There are other optional blocks in a Stan model specification that we will encounter later in more complex applications. We mention this here only so you do not think a model specification necessarily includes *only* the components `data`, `parameters`, and `model`, shown above.
+
+When `model_spec` is passed to Stan, the lines are processed as C++ code in consecutive order, hence their ordering matters. In general, C++ wants variables to be declared before they are used, and variable values to be resolved before a function needs that value. Therefore, the `data` and `paramters` blocks must occur before the `model` block. Moreover, in the `model` block, the processing statement `theta ~ beta(1, 1)` must come before `theta` appears as an argument in `y ~ bernoulli(theta)`. The implication is that `model` specifications in Stan are written from the top down (i.e., from the prior to the likelihood), contrary to how we visually parse diagrams like @fig-ModelPicBernBeta from the bottom up. This is another reason it can help to have a complete diagram like @fig-ModelPicBernBeta, so it can guide coherent Stan code.
+
+
+### Compile the model
+
+Because Stan generates MCMC samples via HMC (@sec-HMC) in C++, the model specification must first be translated into complete C++ and then compiled into the mathematical structure for HMC. (In computer lingo, the word "compile" means to convert a high-level script into all the low-level details required to execute the specified process.) The HMC details can be elaborate, because derivatives must be analytically computed and other aspects must be set. Therefore this step can take a noticeable amount of processing time.
+Because it takes a while to execute, we run it once the first time through our workflow, then use the result for subsequent MCMC sampling. 
+
+You can do this in CmdStanR or in RStan. The two interfaces have somewhat analogous functions, but they differ in their input arguments and in their output formats. We present code for both interfaces. For new applications, the Stan community recommends using CmdStanR. In the code snippets, we may prefix the functions with their package names, `cmdstanr::` or `rstan::`, as a reminder of which interface is being used, but these package-name prefixes are not necessary.
+
+**CmdStanR:**
+A CmdStanR function for this step is 
+```{r}
+#| eval: FALSE
+cmdstan_model_obj <- cmdstan_model(stan_file = write_stan_file(model_spec))
+```
+\noindent Recall that `model_spec` is a character string defined above. We convert it to the format expected by `cmdstan_model()` by using `write_stan_file()`. We arbitrarily named the resulting model object as `cmdstan_model_obj`. This model object is very elaborate. We will use this object again, below. An exercise at the end of the chapter shows how to save the model object using the `dir` argument.
+
+```{r}
+#| echo: FALSE
+#| message: false
+#| warning: false
+#| cache: true
+cmdstan_model_obj <- cmdstan_model( 
+  stan_file = write_stan_file(model_spec) ,
+  dir = save_file_folder ) # folder for where to save executable
+```
+
+**RStan:** 
+An RStan function for this step is `rstan::stan_model()`:
+```{r}
+#| eval: FALSE
+rstan_model_obj <- rstan::stan_model(model_code = model_spec)
+```
+```{r}
+#| echo: FALSE
+if ( run_fresh ) { 
+  rstan_model_obj <- rstan::stan_model( model_code = model_spec ) 
+  save( rstan_model_obj , file = paste0(save_file_folder,"/08_rstan_model_obj.Rdata") )
+} else {
+  load( paste0(save_file_folder,"/08_rstan_model_obj.Rdata") )
+}
+```
+\noindent We have arbitrarily named the output object `rstan_model_obj`. It is very elaborate and contains similar information as the model object from CmdStanR, but has different internal structure.
+
+### Generate the MCMC sample
+
+To generate an MCMC sample, the function needs, as input, the compiled model object and the data (which we specified above and named `data_list`). The MCMC sampler also needs to be told details of the chains we desire, such as how many distinct chains to run, how many burn-in steps to discard, how many steps to take after the burn-in, and the seed for the PRNG if we want to reproduce the same MCMC results later.
+
+To speed processing by running in parallel on multiple computer cores, it can help to execute the global command 
+```{r}
+#| eval: false
+options(mc.cores = <value>)
+```
+\noindent where `<value>` is a positive integer no greater than the result from `detectCores()`, which returns the number of cores on your computer. Usually it is helpful and sufficient to set `<value>` to the number of chains you will be running, assuming that does not exceed the result of `detectCores()`. For example, if you typically run 4 chains, you could replace `<value>` with `min(c(4, detectCores()))`.
+
+**CmdStanR:** In CmdStanR, the function that generates the MCMC sample is bound to the model object (which is a so-called "R6" type), and is not a separate stand-alone function. Therefore, for invoking the sampling function, we do not pipe the model object into the function, but instead call the function with a `$sample()` suffix on the model object, as shown below. We tell the function to use `data_list` (defined above) for the data. We arbitrarily specify 200 warm-up (burn-in) steps, followed by 10,000 regular steps allocated equally to 4 chains:
+```{r}
+#| eval: FALSE
+cmdstan_fit <- cmdstan_model_obj$sample(
+  data = data_list, 
+  chains = 4, iter_warmup = 200, iter_sampling = 2500, seed = 47)
+```
+\noindent We desired a total of 10,000 post warm-up steps, and because we specified `chains = 4`, that corresponds to 2,500 steps per chain, specified as `iter_sampling`. The output of `$sample()` is placed in an object we called `cmdstan_fit`, and it contains many attributes in addition to the MCMC chain. An exercise at the end of this chapter explains how to save the resulting fit object using the `$save_object()` function.
+```{r}
+#| results: "hide"
+#| echo: FALSE
+if ( run_fresh ) { 
+  cmdstan_fit <- cmdstan_model_obj$sample(
+    data = data_list,
+    chains = 4, iter_warmup = 200, iter_sampling = 2500, seed = 47 )
+  cmdstan_fit$save_object( file = paste0(save_file_folder,"/08_cmdstan_fit.RDS") )
+} else {
+  cmdstan_fit <- readRDS( paste0(save_file_folder,"/08_cmdstan_fit.RDS") )
+}
+```
+
+
+**RStan:** 
+A function for telling Stan to generate an MCMC sample from an RStan model object is `rstan::sampling()`. Its first argument (named `object`) expects a compiled RStan model object, so we can pipe it into the function. It also needs to be told details of the chains we desire. Unlike the CmdStanR `$sample()` function, the `rstan::sampling()` function has argument `warmup` to specify the warm-up (or burn-in) steps per chain, and argument `iter` to specify the total number of steps per chain including warm-up. Therefore, the number of saved steps per chain is `iter`${}-{}$`warmup`, and for 10,000 saved steps allocated across 4 chains, we specify:
+```{r}
+#| eval: FALSE
+rstan_fit <- rstan_model_obj |> 
+  rstan::sampling(
+    data = data_list,
+    chains = 4, warmup = 200, iter = 200 + 2500, seed = 47)
+```
+```{r}
+#| results: "hide"
+#| echo: FALSE
+if ( run_fresh ) { 
+  rstan_fit <- rstan_model_obj |> rstan::sampling( 
+    data = data_list , 
+    chains = 4, warmup = 200, iter = 200+2500, seed = 47 )
+  save( rstan_fit , file = paste0(save_file_folder,"/08_rstan_fit.Rdata") )
+} else {
+  load( paste0(save_file_folder,"/08_rstan_fit.Rdata") )
+}
+```
+\noindent The output of `rstan::sampling()` is placed in an object we called `rstan_fit`, and it contains many attributes in addition to the MCMC chain.
+
+<!-- You may combine the `rstan::stan_model()` and `rstan::sampling()` functions into a single call to the function `rstan::stan()` which does both, but conceptually it is valuable to understand that there are separate processing steps involved. -->
+
+#### Thinning the chain {#sec-thin}
+
+For some applications, the MCMC chains of some parameters might be strongly autocorrelated, resulting in ESS that is too small. A sufficiently large ESS can be obtained by running longer chains. But that can result in very large output objects that take up a lot of computer memory (even by contemporary standards) and take a lot of computer time when post-processing the chains for diagnostics or transformations of parameters. 
+
+To address the memory problem, we can resort to "thinning" the MCMC chains, which means saving only every $n^{th}$ step in the chain. The premise is that when chains are strongly autocorrelated, immediately successive steps provide little independent information. Therefore, to save computer memory and post-processing time, we throw away some information, but we run a long chain to achieve the desired ESS. It is important to understand that thinning is not logically necessary, that thinning reduces the total information in the saved chain, and thinning is used only to reduce the size (in computer memory) of the MCMC output object.
+
+The `$sample()` function in CmdStanR, and the `sampling()` function in RStan, has an argument named `thin`. By default, `thin = 1`, which means that every step is saved. If we set `thin = 5`, then only every $5^{th}$ step is saved. If you want the total length of the saved chain to be a certain size, then you must enlarge the number of post-warmup steps by the same factor. 
+For example, in CmdStanR, to save 2,500 steps per chain, you might specify `$sample(thin = 5, iter_sampling = 2500 * 5)`.
+In `rstan::sampling()`, the warmup steps must be included in `iter`, so you might specify `thin = 5` and `iter = 200 + 2500 * 5`.
+
+### Check the MCMC diagnostics {#sec-check_MCMC_diag}
+
+We can extract the MCMC draws from the model fit using the function `as_draws_df()` from the `posterior` package. This function recognizes model fit objects from CmdStanR or RStan:
+```{r}
+cmdstan_fit |>  # Or `rstan_fit`
+  posterior::as_draws_df() |> 
+  glimpse()
+```
+\noindent The variable named `theta` contains the MCMC sampled value of the parameter. The variable named `lp__` stands for log-probability, and is rarely needed, so we will usually ignore it. The other variables are indexes for the step and chain: `.chain` indicates the chain index, from 1 to 4; `.iteration` is the within-chain step from 1 to 2,500; and `.draw` is the overall step across all chains, from 1 to 10,000.
+
+```{r}
+#| echo: FALSE
+#| label: fig-stan_tr_den
+#| fig-cap: "Chains produced by Stan. Notice that only the post-warmup steps are shown. Numerical diagnostics are in @tbl-fit_diag."
+#| fig-width: 5.5
+#| fig-height: 2.0
+#| fig-pos: "!tb"
+
+trace_plot <- cmdstan_fit |> 
+  posterior::as_draws_df() |> 
+  dplyr::select( -`lp__` ) |> 
+  bayesplot::mcmc_trace()
+
+dens_plot <- cmdstan_fit |> 
+  posterior::as_draws_df() |> 
+  dplyr::select( -`lp__` ) |> 
+  bayesplot::mcmc_dens_overlay()
+
+( trace_plot + theme(legend.position="none") 
+  | dens_plot )
+```
+
+*Visual inspection of chains.*
+As a qualitative check of the MCMC draws, we can make a trace plot and density plot.
+The `bayesplot` package has convenient functions for making such plots. We pipe the extracted draws into the desired plot function, as follows:
+```{r}
+#| eval: false
+cmdstan_fit |>  # Or `rstan_fit`
+  posterior::as_draws_df() |>  # Extract draws
+  dplyr::select( -`lp__` ) |>  # Remove unneeded variable
+  bayesplot::mcmc_trace()      # Make trace plot
+
+cmdstan_fit |>  # Or `rstan_fit`
+  as_draws_df() |> 
+  select(-`lp__`) |> 
+  mcmc_dens_overlay()  # Make density plot
+```
+\noindent In the first pipe sequence above, we included the package-name prefixes with the functions, merely for clarity, but this is not necessary, as shown in the second pipe sequence above. @fig-stan_tr_den shows the resulting trace plot and density plot, side by side. The plots in @fig-stan_tr_den suggest that the chains are well behaved, with no obvious problems. But we need to inspect numerical diagnostics for a more rigorous check.
+
+
+*Numerical MCMC diagnostics.*
+We can compute numerical diagnostics by using a variant of the `summarize_draws()` function from the posterior package. The default settings for that function are not what we find to be most useful; for example it returns the 90% ETI not the 95% ETI. Therefore, we have created a function `summarize_draws_dbda3()` in the dbda3 package with our preferred settings. The `summarize_draws_dbda3()` function has an argument, `mcse`, that returns the MCSE values of the quantiles when set to `TRUE`, although it defaults to `FALSE`.
+
+To compute the MCMC diagnostics, we pipe in the extracted draws from the model fit:
+```{r}
+#| eval: false
+cmdstan_fit |>  # Or `rstan_fit`
+  as_draws_df() |> 
+  select(-`lp__`) |> 
+  summarize_draws_dbda3()
+```
+```{r}
+#| echo: false
+cmdstan_fit_diag <- cmdstan_fit |>  # Or `rstan_fit`
+  as_draws_df() |> 
+  select(-`lp__`) |> 
+  summarize_draws_dbda3()
+```
+\noindent The resulting numerical diagnostics are shown in @tbl-fit_diag, where it can be seen that rhat is less than 1.01, and the ESS's are greater than our recommended 4,000. Therefore we can be reasonably confident that the results are representative and fairly accurate and stable, although we would want to run longer chains for better stability of estimated quantiles. 
+
+
+```{r}
+#| echo: FALSE
+#| label: tbl-fit_diag
+#| tbl-cap: "Diagnostics from `summarize_draws_dbda3()` for the MCMC chains plotted in @fig-stan_tr_den. The columns q50, q2.5, and q97.5 are quantiles of the posterior distribution; that is, q50 is the median, while q2.5 and q97.5 are the limits of the 95% ETI. ess_q50 is the ESS of the median, while ess_eti is the minimum of ess_q2.5 and ess_q97.5."
+#| tbl-pos: "!bt" # for LaTeX floating figures
+
+cmdstan_fit_diag |> 
+  tt_diag(digits_q = 2, placement = NULL, variable_name = "variable")
+  
+  # rename(Variable = variable) |> 
+  # select(Variable, median, q5, q95, rhat, ess_bulk, ess_tail)  |> 
+  # tt() |>
+  # format_tt(i = "colnames", escape = TRUE) |> # handles '_'
+  # # quantiles:
+  # format_tt(j = 2:4, digits = 3, num_fmt = "decimal", num_zero = TRUE) |>
+  # # rhat:
+  # format_tt(j = 5, digits = 3, num_fmt = "decimal", num_zero = TRUE) |>
+  # # ess:
+  # format_tt(j = 6:7, digits = 0, num_fmt = "decimal", num_zero = TRUE, num_mark_big=",") |>
+  # 
+  # style_tt(j = 1, align = "l") |>
+  # style_tt(j = 2:7, align = "r")
+```
+
+
+
+## Think log probability to think like Stan {#sec-stan_log_prob}
+
+Considering the algorithm used by Stan (@sec-HMC), most of Stan's effort is spent on computing the trajectory for Hamiltonian dynamics. From a current parameter position, the algorithm randomly generates an initial momentum and jittered step size and number of steps. Then the Hamiltonian dynamics are deterministically computed from the gradient of the potential function, that is, from the gradient of the negative-logarithm of the posterior density. This repeats for many steps. At the end of the trajectory, the ratio of the posterior density at proposed and current positions (along with the momentum) is used to deterministically compute an acceptance probability. A random number from a uniform distribution is sampled if the acceptance probability is less than 1. Notice that the probability of acceptance in Equation \ref{eq:MetropolisRuleHMC} could be re-written by taking the logarithm of both sides, so that the acceptance probability also involves computing the logarithm of the posterior density. Thus, the essence of computation in Stan is dealing with the logarithm of the posterior probability density and its gradient; there is no direct random sampling of parameters from distributions.
+
+If there is no random sampling of parameters from distributions, then what could a model specification like `theta ~ beta(1, 1)` actually mean to Stan? It means to multiply the current posterior probability by the density of the beta distribution at the value of `theta`. But computationally, Stan operates on the logarithms of probabilities, so it means to additively increment the current log-probability by the log-density of the beta density. In fact, in Stan, the sampling statement, `theta ~ beta(1, 1)`, is translated into an increment in the log-probability. (Specifically, `theta ~ beta(1, 1)` becomes `target += beta_lpdf(1, 1)`, where `lpdf` refers to the logarithm of the probability density. If you want delve into technical details, see the Stan reference manual regarding "sampling statements".) Our point of mentioning this here is for you to understand a bit better why log-probability and gradients are so central to the architecture of Stan. We will also be using the log-probability statements for computing Bayes factors via bridge sampling in @sec-bridge_sampling. Meanwhile, the representation of models with sampling statements, such as Equations \ref{eq:bernoulli} and \ref{eq:beta}, and with the corresponding model diagrams such as @fig-ModelPicBernBeta, makes model specification conceptually clear.
+
+
+## Exercises
+
+```{r}
+#| echo: FALSE
+# Initialize global variables for exercise number and part:
+exNum <- 0
+exPrt <- 0
+exNew = function( ){
+  exNum <<- exNum+1 # increment global value
+  exPrt <<- 0 # reset global value
+  return(exNum)
+}
+exPart = function( ){
+  exPrt <<- exPrt+1 # increment global value
+  return(LETTERS[exPrt])
+}
+```
+
+These exercises assume you have installed Rtools and CmdStanR as explained at the beginning of this chapter. Installation is an exercise by itself!
+
+<!-- ------------------------------------------------------------------ -->
+\vspace{1ex}\noindent
+**Exercise [-@sec-Stan].`r exNew()`.**
+*Purpose: Run the same Stan model object with different MCMC specifications, or different data.*  
+
+**Part `r exPart()`.**
+In R, create the full `model_spec` as in @sec-stan_intro_example_model. Then, create the CmdStanR model object using the following syntax, including the argument `exe_file` for saving the model object:
+```{r}
+#| eval: false
+cmdstan_model_obj <- cmdstan_model(
+  stan_file = write_stan_file(model_spec),
+  dir = getwd())  # Or any existing folder
+```
+\noindent The `dir` argument tells `cmdstan_model()` to save the compiled model object in that folder. Then, even if you quit R and restart R later, this command will execute very quickly because it will merely load the saved model object instead of recompiling. This is valuable because compiling the model takes considerable time. For the value of `dir`, you can specify any folder (not file) you like, but `getwd()` is a reasonable default because it is your current working directory. However, `cmdstan_model()` will create a random file name such as `r set.seed(474); paste0("model_", paste( sample( c(letters,0:9,0:9), 12, replace=TRUE) , collapse="" ), ".exe" )`, but much longer, and therefore it may help if you create a specific project subfolder and not clutter your working directory with random model names. Be sure to create the subfolder before trying to save to it; see the function `dir.create()` in base R.
+
+**Part `r exPart()`.**
+Create the `data_list` as in @sec-stan_intro_example_data. Generate an MCMC sample with
+```{r}
+#| eval: false
+cmdstan_fit <- cmdstan_model_obj$sample(
+  data = data_list,
+  chains = 4, iter_warmup = 200, iter_sampling = 2500, seed = 47)
+```
+Examine the result by considering
+```{r}
+#| eval: false
+cmdstan_fit |> 
+  as_draws_df() |> 
+  select(-`lp__`) |> 
+  summarize_draws_dbda3(mcse = TRUE)
+```
+
+**Part `r exPart()`.**
+Re-run the previous part with `seed = 42`. There is no need to recompile the model object. Simply change the `seed` argument in `$sample()`. Have the results changed much?
+
+**Part `r exPart()`.**
+Re-run the model fit with different data. Construct the `data_list` with 40 1's and 10 0's:
+```{r}
+#| eval: false
+y <- c(rep(1, times = 40), rep(0, times = 10))
+data_list <- list(y = y, n = length(y))
+```
+\noindent Generate an MCMC sample and examine the result using the same syntax as before; there is no need to recompile the model object. Are the estimated values for theta very nearly 1 minus the estimated values when there were 10 1's and 40 0's? They should be. Why?
+
+**Part `r exPart()`.**
+Re-run the above sampling sessions, each time saving the fit object by using the function `$save_object()`. You must specify a file name, with a directory path if the folder is not your current working directory. The saved file is `.RDS` format. For example, your code could look like this:
+```{r}
+#| eval: false
+cmdstan_fit <- cmdstan_model_obj$sample( ... )
+cmdstan_fit$save_object(file = "my_cmdstan_fit.RDS")
+```
+\noindent Then, to recover the fit object later, you can run
+```{r}
+#| eval: false
+cmdstan_fit <- readRDS(file = "my_cmdstan_fit.RDS")
+```
+\noindent Notice that we assigned the output of `readRDS` to the same name as the original saved object, but we would not have to, although it could be confusing not to.
+
+Sometimes we will want to expand an existing R program and not have to re-compile and re-sample models that are already settled from previous sessions. The `cmdstan_model` function accomplishes this seamlessly with its `dir` argument. Unfortunately we have to manually check for previous sampling. Here is one way to do this:
+```{r}
+#| eval: false
+my_file_name <- "my_cmdstan_fit.RDS"
+if (file.exists(my_file_name)) {
+  cmdstan_fit <- readRDS(file = my_file_name)
+} else {
+  cmdstan_fit <- cmdstan_model_obj$sample( ... )
+  cmdstan_fit$save_object(file = my_file_name)
+}
+```
+
+
+<!-- ------------------------------------------------------------------ -->
+<!-- \vspace{1ex}\noindent -->
+<!-- **Exercise [-@sec-Stan].`r exNew()`.** -->
+<!-- *Purpose: ...*   -->
+
+
+<!-- **Part `r exPart()`.** -->
+<!-- Text text text... -->
+
