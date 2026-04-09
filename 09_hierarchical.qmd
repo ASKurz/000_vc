@@ -1,0 +1,1961 @@
+
+{{< include global.qmd >}}
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| message: FALSE
+save_file_folder <- "A09_hierarchical_files" 
+# Above: Windows OS refuses folder names that start with numerals.
+dir.create( save_file_folder )
+# RUN FRESH VERSIONS OF SAVED OBJECTS:
+run_fresh <- FALSE 
+```
+
+# Hierarchical (a.k.a. Multilevel) Models {#sec-Hierarchical}
+
+```{=latex}
+{\renewcommand{\thefootnote}{}\footnotetext{\noindent This chapter uses these R packages: \texttt{bayesplot}, \texttt{cmdstanr}, \texttt{dbda3}, \texttt{ggarrow}, \texttt{ggdist}, \texttt{ggforce}, \texttt{patchwork}, \texttt{posterior}, \texttt{rstan}, \texttt{tidybayes}, \texttt{tidyverse}, and \texttt{tinytable}.}}
+```
+
+
+<!-- ::: {.callout-note appearance="minimal"} -->
+<!-- Oh darlin', for love, it's on you I depend.\ -->
+<!-- Well, I s'pose Jack Daniels is also my friend.\ -->
+<!-- But you keep him locked up in the ladies' loo,\ -->
+<!-- S'pose that means his spirits depend on you too.^[**Write a new quatrain?** This chapter is about hierarchical models. In hierarchical models, the joint prior distribution can be factored into terms that have some parameters dependent on other parameters. In other words, there are chains of dependencies among parameters. The poem expresses other situations in which there are dependencies and codependencies. Wordplay: Jack Daniels is a brand of whiskey, here being referred to as a person. The word "spirits" is playing double duty to refer to the alcoholic beverage and the person's mood.] -->
+<!-- ::: -->
+
+
+Hierarchical models are mathematical descriptions involving multiple parameters such that the probabilities of some parameters depend on the values of other parameters. For example, consider several coins minted from the same factory. A head-biased factory will tend to produce head-biased coins. If we denote the bias of the factory by $\omega$ (Greek letter omega), and we denote the biases of the coins by $\theta_j$ (where the subscript $j$ indexes different individual coins), then the generated values of $\theta_j$ depend on the value of $\omega$. Consequently, when estimating the bias of any one coin from observing its flips, the estimate should depend on the estimate of factory bias, and the estimate of the factory bias is, in turn, influenced by the data from all the coins. There are many realistic situations that involve meaningful hierarchical structure. Bayesian modeling software like Stan makes it straightforward to specify and analyze complex hierarchical models. Hierarchical models are also called *multilevel* models, in which a lower-level parameter depends on a higher-level parameter.
+
+There are many examples of data that naturally suggest hierarchical or multilevel descriptions. For example, consider the batting ability of baseball players who have different primary fielding positions. The data consist of (i)&nbsp;the number of hits each player attains, (ii)&nbsp;each player's number of opportunities at bat, and (iii)&nbsp;the primary fielding position of the player. The fielding position is relevant because some positions do not emphasize batting ability as much as others. Each player's individual ability is described by a parameter $\theta_j$, which depends on a parameter $\omega$ that describes the typical ability of players in that fielding position. 
+
+As another example, consider the probability that a child bought lunch from the school cafeteria, in different schools in different districts. The data consist of (i)&nbsp;the number of days each child bought lunch, (ii)&nbsp;the number of days the child was at school, and (iii)&nbsp;the school and district of the child. A child's individual probability is described by a parameter $\theta_j$, which depends on a parameter $\omega$ that describes the typical buying probability of children in the school. In this example, the hierarchy could be extended to higher levels, in which additional parameters describe the buying probabilities of districts or cities or states. 
+
+As yet another example, consider the probability that patients recover from heart surgery performed by different surgical teams within different hospitals in different cities. In this case, we can think of each surgical team as a coin, with each patient outcome being a flip of the surgical-team coin. The data consist of (i)&nbsp;the number of recoveries, (ii)&nbsp;the number of surgeries, and (iii)&nbsp;the hospital and city of the surgery. Each team's probability is described by a parameter $\theta_j$ that depends on a parameter $\omega$ that describes the typical recovery probability for the hospital. We could expand the hierarchy to estimate typical recovery probabilities for cities. 
+
+In all these examples, what makes hierarchical modeling especially useful is that the estimate of each individual parameter is simultaneously informed by data from all the other individuals, because all the individuals inform the higher-level parameters, which in turn constrain all the individual parameters. These structural dependencies across parameters provide better-informed estimates of all the parameters.
+
+The parameters at different levels in a hierarchical model are all parameters that coexist in a joint parameter space. We simply apply Bayes' rule to the joint parameter space, as we did, for example, when estimating the two parameters of a normal distribution in @fig-mu_sigma_3D, or when estimating two coin biases in @fig-BernTwoGibbs. (However, those models were not hierarchical.) Expressed formally with parameters $\theta$ and $\omega$, Bayes' rule applies to the *joint* parameter space: $p(\theta,\omega|D) \propto p(D|\theta,\omega) \, p(\theta,\omega)$. 
+
+Hierarchical models are special because the terms with joint parameters can be factored into a chain of dependencies, like this:
+\begin{align}
+p(\theta,\omega|D)
+&\propto p(D|\theta,\omega) \, p(\theta,\omega)
+\label{eq:JointBayes} \\
+&= p(D|\theta) \, p(\theta|\omega) \, p(\omega)
+\label{eq:ChainOfDependencies}
+\end{align}
+Equation \ref{eq:JointBayes} is always true because it is Bayes' rule, while the refactoring in Equation \ref{eq:ChainOfDependencies} is possible only for hierarchical models. The refactoring of Equation \ref{eq:ChainOfDependencies} means that the data depend only on the value of $\theta$, in the sense that when the value $\theta$ is set then the data are independent of all other parameter values. Moreover, the value of $\theta$ depends on the value of $\omega$.
+
+When Equation \ref{eq:JointBayes} can be refactored as in Equation \ref{eq:ChainOfDependencies}, people sometimes wonder whether the middle factor, $p(\theta|\omega)$, is in the likelihood or in the prior. And the answer is: both. Regardless of refactorization, the likelihood is $p(D|\theta,\omega)$ and the prior is $p(\theta,\omega)$.
+
+Many multiparameter models can be reparameterized, which means that the same mathematical structure can be re-expressed by recombining the parameters. For example, a rectangle can be described by its length and width, or equivalently by its area and aspect ratio (where area is length times width, and aspect ratio is length divided by width). A model that can be factored as a chain of dependencies under one parameterization might not have a simple factorization as a chain of dependencies under another parameterization. Thus, a model is hierarchical with respect to a particular parameterization. We choose a parameterization that is meaningful and useful for the application at hand. 
+
+The dependencies among parameters become useful in several respects. First, the dependencies are meaningful for the given application. Second, because of the dependencies across parameters, all the data can jointly inform all the parameter estimates. Third, the dependencies can sometimes facilitate efficient MCMC sampling from the posterior distribution in Gibbs sampling (recall @sec-GibbsSampling).
+
+
+## Example: Multiple coins from the same mint
+
+<!-- ^[In this context, a "mint" is a factory that produces coins. However, we have seen mint-flavored coin-shaped candies, which would give a different meaning to "coins from the same mint," but which is not the meaning of mint we meant.] -->
+
+Throughout the previous chapters, we have used the simple example of estimating the head-probability, or bias, of a coin. In this chapter we expand the situation to include more than one coin, with all the coins known to come from the same mint. Individual coins will be indicated by subscript $j$. The flips of an individual coin are denoted $y_{i|j}$, where the subscript refers to the $i^{th}$ flip from the $j^{th}$ coin. The data for a coin are summarized as the number of heads, $z_j$, and the number of flips, $n_j$. The bias of an individual coin is denoted $\theta_j$. 
+
+Here is the novel part: We will also estimate the bias of the mint and the consistency of the individual coin biases generated by the mint. The estimate of the mint bias represents the typical bias of a coin generated by the mint. The estimate of the mint's consistency represents how similar the biases of different coins tend to be. 
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| message: FALSE
+#| label: fig-gen_model_data
+#| fig-cap: "The curve is a beta distribution, with mode $\\omega$ and concentration $\\kappa$, that represents the mint. The mint generates many individual coins with different biases, $\\theta_j$. Each coin generates its individual data when it is flipped $n_j$ times, with random $z_j$ heads resulting. The histogram shows the distribution of proportions, $z_j/n_j$. The axes are playing double duty, with the x-axis representing the theta value for the curve and the data proportion for the histogram, and with the y-axis representing the corresponding probability density."
+#| fig-width: 3.0
+#| fig-asp: 0.725
+#| fig-pos: "!tbh"
+
+# Generate z,n from beta distribution:
+omega <- 0.70
+kappa <- 20
+a <- omega*(kappa-2)+1
+b <- (1-omega)*(kappa-2)+1
+n_theta <- 10000
+n_each <- 10
+n <- rep( n_each , n_theta )
+set.seed(47)
+theta <- rbeta( n_theta , a, b)
+z <- n # merely to initialize
+for ( j in 1:length(z) ) {
+  z[j] <- sum( runif( n[j] ) < theta[j] )
+}
+z_df <- data.frame( theta_obs = z/n , theta = theta )
+# Beta density values:
+x <- seq(0,1,length=201)
+y <- dbeta( x , a, b)
+beta_df <- data.frame( x=x , y=y )
+
+# Create histogram and superimpose beta density:
+ggplot( z_df , aes(x = theta_obs )) +
+  # geom_dotplot( # mapping=aes(y = after_stat(density)), # doesn't do anything
+  #               method="histodot" , binwidth=0.1 ,
+  #               fill=fill_color_1, color=fill_color_1 ) + 
+  geom_histogram(
+    aes(y = after_stat(density)),
+    fill = fill_color_1, color=border_color_1,
+    breaks = seq( 0-(1/(n_each*2)) , 1+(1/(n_each*2)) , by=1/n_each )
+  ) + 
+  geom_line( data=beta_df, aes( x = x, y = y ) , 
+             color=line_color_1, linewidth=1 ) +
+  scale_x_continuous( breaks=seq( 0 , 1 , by=2/n_each ) ) +
+  ylim(c(0,1.1*max(beta_df))) +
+  labs(x = expression(theta[italic(j)]~(curve)~or~italic(z[j])/italic(n[j])~(histogram)),
+       y = expression(italic(p)(theta[italic(j)]*'|'*omega*","*kappa)~or~italic(p)(italic(z[j])/italic(n[j]))))
+```
+
+Recall from @sec-PossibAreParam and @fig-shower_head_and_normal that we think of models as data-generating machines that mimic the patterns of data we observe from the world. Therefore, to understand the model, we need to understand how it generates data. @fig-gen_model_data illustrates some data generated by the model. 
+
+The curve in @fig-gen_model_data represents the mint that generates coins. The curve is a beta density with $\omega$ = `r omega` and $\kappa$ = `r kappa`, from which $\theta_j$ values are randomly generated. In other words, as coins are stamped by the mint they tend to have a bias $\theta_j$ that is near $\omega$ = `r omega`, but the exact bias in any individual coin is different, with a consistency described by the concentration, $\kappa$ = `r kappa`. If we were to make a histogram of the generated $\theta_j$ values, in the long run it would exactly match the beta distribution.
+
+In our example, each coin $j$ is flipped $n_j$ = `r n_each` times, yielding $z_j$ heads. Note that $z_j$ is a random integer between 0 and `r n_each`, and therefore the proportion $z_j/n_j$ is one of the discrete values, `r 0/n_each`, `r 1/n_each`, `r 2/n_each`, ..., `r (n_each-1)/n_each`, `r n_each/n_each`. The proportion $z_j/n_j$ will be randomly above or below $\theta_j$.
+
+The histogram in @fig-gen_model_data shows the distribution of $z_j/n_j$ for `r format( n_theta , big.mark="," )` coins. The histogram is spread wider than the beta distribution because the observed data proportions, $z_j/n_j$, are only a noisy reflection of the actual bias, $\theta_j$, that generated them. If $n_j$ were very large (instead of only `r n_each`), then $z_j/n_j$ would tend to be very close to $\theta_j$, and the histogram would be almost as narrow as the beta distribution.
+
+@fig-gen_model_data started with an arbitrary setting of the model parameters and generated simulated data.
+In Bayesian inference, we start with observed data, $z_j$ and $n_j$ for every coin, and we infer estimates of all the model's parameters: $\theta_j$, $\omega$, and $\kappa$.
+
+## Another useful prior distribution: gamma {#sec-gamma_distribution}
+
+For any parameter we estimate, we need a prior distribution. The mode parameter, $\omega$, has as its natural prior the beta distribution (just as we used a beta prior for a single $\theta$ parameter). Later, when we specify the model in Stan, we will put a beta prior on the $\omega$ parameter.
+<!-- , but then translate the value of $\omega$ into shape parameters for a beta distribution using Equation \ref{eq:betaABfromOmegaK} (and recall the lower panels of @fig-BetaDistributionMeanMode).  -->
+
+But what about the concentration parameter, $\kappa$? It has a domain over the interval from zero to positive infinity, denoted $[0,\infty)$, and we have not yet dealt with density distributions on that domain. A natural candidate is the *gamma* distribution.
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| message: FALSE
+#| label: fig-GammaDistrib
+#| fig-cap: "Examples of gamma densities. The gamma distribution is defined over the domain $[0,\\infty)$."
+#| fig-width: 6.0
+#| fig-asp: 0.8
+#| fig-pos: "!tbh"
+
+bind_rows(
+  gamma_s_r_from_mean_sd(mean = 1, sd = 10),
+  gamma_s_r_from_mean_sd(mean = 50, sd = 50),
+  gamma_s_r_from_mode_sd(mode = 18, sd = 40),
+  gamma_s_r_from_mode_sd(mode = 42, sd = 20)) |>  
+  expand_grid(x = seq(from = 0, to = 160, length.out = 500)) |> 
+  mutate(density = dgamma(x = x, shape = shape, rate = rate),
+         mean = shape * 1 / rate,
+         mode = ifelse(shape > 1, (shape - 1) / rate, 0),
+         sd = sqrt(shape * (1 / rate)^2)) |> 
+  mutate(label = str_c("shape = ", shape, ", rate = ", rate, 
+                       "\nmean = ", mean, ", sd = ", round(sd, 2), 
+                       ", mode = ", round(mode, 2))) |>
+  # This line obviates the warning message
+  filter(density < Inf) |> 
+  
+  ggplot(aes(x = x, y = density)) +
+  geom_area(fill = fill_color_1) +
+  scale_fill_viridis_d(option = "A", end = .9, breaks = NULL) +
+  scale_x_continuous(expression(kappa)) +
+  scale_y_continuous(expression('gamma'*(kappa*"|"*italic(s)*", "*italic(r))), 
+                     breaks = 0:2 / 100) +
+  coord_cartesian(xlim = c(0, 150),
+                  ylim = c(0, 0.022)) +
+  facet_wrap(~ label)
+```
+
+The $\mbox{gamma}(\kappa|s,r)$ distribution is a probability density for $\kappa \ge 0$, with two parameters that determine its exact form, called its shape $s$ and rate $r$ parameters. 
+<!-- The formula for the gamma density is $\mbox{gamma}(\kappa|s,r) = \left( r^s / \Gamma(s) \right) \kappa^{s-1} e^{-r\kappa}$, where $\Gamma(s)$ is the gamma  function: $\Gamma(s) = \int_0^\infty dt \, t^{s-1} e^{-t}$. These mathematical details can be useful for analytic derivations of Bayesian posterior distributions, especially when using conjugate priors, but we will not be pursuing that method here. -->
+@fig-GammaDistrib shows examples of the gamma distribution with different values of the shape and rate parameters. The annotations in the panels of @fig-GammaDistrib also show the corresponding mean, standard deviation, and mode of the distribution. 
+The top-left panel shows a frequently used version in which both the shape and rate are set to equivalent small values. This setting results in the mean being 1 and the standard deviation being relatively large, with the mode at zero. 
+The other three panels of @fig-GammaDistrib show cases in which the mean is set to 50, but the standard deviations and modes differ. 
+In the upper right, the standard deviation equals the mean, in which case the gamma distribution has shape = 1 (and is, in fact, an exponential distribution). 
+In the lower panels, the standard deviation is less than the mean, and you can see how the gamma distribution becomes less skewed as the standard deviation gets smaller, with the mode getting closer to the mean. 
+We will use the generic shape of the lower-left panel of @fig-GammaDistrib as the iconic gamma distribution in model diagrams because this shape suggests that the distribution has a lower boundary of zero but an infinite extent on positive values.
+
+As you can see from @fig-GammaDistrib, it is not intuitively obvious how particular values of the shape and rate parameters correspond with particular visual shapes of the gamma distribution. Moreover, prior beliefs are most intuitively expressed in terms of the central tendency and a spread of the distribution. Therefore, it would be useful to be able to start with values for central tendency and spread, then convert them into corresponding shape and rate values. It turns out that the mean of a gamma distribution is $\mu = s / r$, the mode is $\omega = (s-1)/r$ for $s>1$, and the standard deviation is $\sigma = \sqrt{s} / r$. Algebraic manipulation then yields the following formulas for the shape and rate values in terms of the mean and standard deviation, or mode and standard deviation:
+\begin{align}
+  &s = \frac{\mu^2}{\sigma^2}\quad
+  \mbox{and}\quad
+  r = \frac{\mu}{\sigma^2}
+  \mbox{~~~~for mean $\mu > 0$}
+  \label{eq:gammaSRfromMuSD}
+\end{align}
+\begin{align}
+  &s = 1 + \omega r\quad
+  \mbox{where}\quad
+  r = \frac{ \omega + \sqrt{ \omega^2 + 4 \sigma^2 } }{ 2 \sigma^2 }
+  \mbox{~~~~for mode $\omega > 0$}
+  \label{eq:gammaSRfromOmegaSD}
+\end{align}
+For example, suppose we desire a gamma distribution with a mode of $\omega=42$ and a standard deviation of $\sigma=20$. We compute the corresponding shape and rate from Equation \ref{eq:gammaSRfromOmegaSD}, which yields $r = ( 42 + \sqrt{ 42^2 + 4 \cdot 20^2 } ) / ( 2 \cdot 20^2 )  = 0.125$ and $s =  1 + 42 \cdot 0.125 = 6.25$, as shown in the lower-right panel of @fig-GammaDistrib.
+
+We have created convenient utility functions in R that implement the parameter transformations in Equations \ref{eq:gammaSRfromMuSD} and \ref{eq:gammaSRfromOmegaSD}. The functions are in the dbda3 package, which was introduced in @sec-dbda3_package. Hopefully the function names are self-explanatory, and here are examples of their use:
+```{r}
+gamma_s_r_from_mean_sd(mean = 50, sd = 40)
+```
+```{r}
+gamma_s_r_from_mode_sd(mode = 42, sd = 20)
+```
+\noindent Notice the numerical results match the values in the lower panels of @fig-GammaDistrib. The functions return a `list` of named components. Therefore, if you assign the result of the function to a variable, you can get at the individual parameters by their component names. These functions are useful when we set the constants for prior distributions in Stan.
+
+
+## Applied to real data {#sec-therapeutic_touch}
+
+Therapeutic touch is a nursing technique in which the practitioner manually manipulates the "energy field" of a patient who is suffering from a disease. The practitioner holds her or his hands near but not actually touching the patient, and repatterns the energy field to relieve congestion and restore balance, allowing the body to heal. @RosaRSB1998 reported that therapeutic touch has been widely taught and widely used in nursing colleges and hospitals despite there being little if any evidence of its efficacy.
+
+@RosaRSB1998 investigated a key claim of practitioners of therapeutic touch, namely, that the practitioners can sense a body's energy field. If this is true, then practitioners should be able to sense which of their hands is near another person's hand, even without being able to see their hands. The practitioner sat with her hands extended through cutouts in a cardboard screen, which prevented the practitioner from seeing the experimenter. On each trial, the experimenter flipped a coin and held her own hand a few centimeters above one or the other of the practitioner's hands, as dictated by the flip of the coin. The practitioner then responded with her best guess regarding which of her hand's was being hovered over. Each trial was scored as correct or wrong. The experimenter (and co-author of the article) was nine years old at the time.
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| message: FALSE
+#| label: fig-TherapeuticTouchApparData
+#| fig-cap: "Data from the therapeutic-touch experiment of @RosaRSB1998. This histogram will be modeled like the histogram in @fig-gen_model_data."
+#| fig-width: 3.0
+#| fig-asp: 0.7
+#| fig-pos: "!tbh"
+
+# tt_data <- read.csv(paste0(save_file_folder,"/TherapeuticTouchData.csv"))
+tt_data <- therapeutic_touch
+y <- ifelse(tt_data$response=="correct" , 1 , 0)     # correct=1, wrong=0
+j <- tt_data$participant |> factor() |> as.numeric() # consecutive integers
+n_j <- j |> unique() |> length()                         # number of subjects
+z <- n <- rep(-1,n_j)
+for ( j_idx in 1:n_j ) {
+  z[j_idx] <- sum( y[ j==j_idx ] ) 
+  n[j_idx] <- sum( j==j_idx ) 
+}
+n_each <- n[1] # all the same
+z_df <- data.frame( z=z , n=n , p=z/n )
+
+ggplot( z_df , aes(x = p )) +
+  geom_histogram(
+    aes(y = after_stat(count)),
+    fill = fill_color_1,
+    breaks = seq( 0-(1/(n_each*2)) , 1+(1/(n_each*2)) , by=1/n_each )
+  ) + 
+  scale_x_continuous( breaks=seq( 0 , 1 , by=2/n_each ) ) +
+  labs(x = "Proportion correct" , y = "# Practitioners" )
+```
+
+\label{fig:TherapeuticTouchApparData}
+
+Each practitioner was tested for 10 trials. There were a total of 21 practitioners in the study, seven of whom were tested twice approximately a year apart. The retests were counted by the authors as separate subjects, yielding 28 nominal subjects. The proportions correct for the 28 subjects are shown in @fig-TherapeuticTouchApparData. Chance performance is 0.50. The questions are: How much did the group as a whole differ from chance performance? and, How much did any individual differ from chance performance? 
+
+The generative structure of @fig-gen_model_data is perfect for these data, because it describes the underlying ability of each subject while simultaneously describing the modal ability of the group and the consistency of the group. Moreover, the distribution of data proportions across subjects in @fig-TherapeuticTouchApparData is essentially unimodal and could be well-mimicked by simulated data generated by the model as was shown in @fig-gen_model_data. With 28 subjects in the data, there are a total of 30 parameters that will be estimated: $\theta_1$, ..., $\theta_{28}$, $\omega$, and $\kappa$.
+
+### The model
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| message: FALSE
+#| label: fig-dependstructjcoins
+#| fig-cap: "A model of hierarchical dependencies for data from several coins created from the same mint. A datum $y_{i|j}$, from the $i^{th}$ flip of the $j^{th}$ coin, depends on the value of the bias parameter $\\theta_j$ for the coin. The values of $\\theta_j$ depend on the values of the mode parameter $\\omega$ and the concentration parameter $\\kappa$ for the mint that created the coins. The top level shows the beta prior on $\\omega$, and the gamma prior on $\\kappa-2$."
+#| fig-width: 2.5
+#| fig-asp: 1.5
+#| fig-pos: "!tbh"
+
+
+# Define some global values
+text_size <- 4.75  # 4
+tilde_y <- 0.5
+dist_greek_y <- 0.8
+
+# The top-level beta
+p11 <- tibble(x = seq(from = 0, to = 1, length.out = 101)) |> 
+  mutate(d = dbeta(x = x, shape1 = 2, shape2 = 2)) |>
+  mutate(d = d / max(d)) |> 
+  
+  ggplot(aes(x = x, y = d)) +
+  geom_area(fill = fill_color_1) +
+  annotate(geom = "text",
+           x = 0.5, y = 0.2,
+           label = "beta",
+           size = text_size) +
+  annotate(geom = "text",
+           x = 0.5, y = dist_greek_y,
+           label = "italic(A)[omega]*', '*italic(B)[omega]", 
+           parse = TRUE, size = text_size) +
+  scale_x_continuous(expand = c(0, 0)) + 
+  theme_void() +
+  theme(axis.line.x = element_line(linewidth = 0.5))
+
+# The top-level gamma
+p12 <- tibble(x = seq(from = 0, to = 5, length.out = 101)) |> 
+  mutate(d = dgamma(x, 1.75, 0.85)) |>
+  mutate(x = x / 5,
+         d = d / max(d)) |> 
+  
+  ggplot(aes(x = x, y = d)) +
+  geom_area(fill = fill_color_1 , linewidth = 0) +
+  annotate(geom = "text",
+           x = 0.5, y = 0.2,
+           label = "gamma",
+           size = text_size) +
+  annotate(geom = "text",
+           x = 0.5, y = dist_greek_y,
+           label = "list(italic(S)[kappa], italic(R)[kappa])",
+           parse = TRUE, size = text_size) +
+  scale_x_continuous(expand = c(0, 0)) + 
+  theme_void() +
+  theme(axis.line.x = element_line(linewidth = 0.5))
+
+# The first arrow
+p2 <- tibble(prior = rep(c("beta", "gamma"), each = 2),
+             parameter = rep(c("ometa", "kappa"), times = 2)) |> 
+  expand_grid(index = 1:2) |> 
+  mutate(x = c(0.235, 0.005, 
+               0.235, 0.60,
+               0.765, 0.15, 
+               0.765, 0.78),
+         y = rep(1:0, times = 4)) |> 
+  ggplot(aes(x = x, y = y)) +
+  geom_arrow(aes(color = parameter,
+                 group = interaction(prior, parameter)),
+             length_head = 7, linewidth = 1/2) +
+  annotate(geom = "text",
+           x = c(0.25, 0.65), y = tilde_y, label = "'~'",
+           parse = TRUE, size = text_size) +
+  scale_color_manual(values = c("gray70", "black"), breaks = NULL) +
+  scale_x_continuous(expand = c(0, 0), limits = 0:1) + 
+  theme_void()
+
+# The second beta
+p31 <- tibble(x = seq(from = 0, to = 1, length.out = 101),
+              d = (dbeta(x, 2, 2)) / max(dbeta(x, 2, 2))) |> 
+  ggplot(aes(x = x, y = d)) +
+  geom_area(fill = fill_color_1, linewidth = 0) +
+  annotate(geom = "text",
+           x = 0.5, y = 0.2, label = "beta",
+           size = text_size) +
+  annotate(geom = "text",
+           x = 0.5, y = dist_greek_y,
+           label = "omega(kappa-2)+1*', '*(1-omega)(kappa-2)+1",
+           parse = TRUE, size = text_size) +
+  scale_x_continuous(expand = c(0, 0)) + 
+  coord_cartesian(clip = "off") +
+  theme_void() +
+  theme(axis.line.x = element_line(linewidth = 0.5))
+
+# The second arrow
+p41 <- tibble(x = 0.5,
+              y = 1:0) |>
+  ggplot(aes(x = x, y = y)) +
+  geom_arrow(length_head = 7, linewidth = 1/2) +
+  annotate(geom = "text",
+           x = 0.4, y = tilde_y, label = "'~'",
+           parse = TRUE, size = text_size) +
+  annotate(geom = "text",
+           x = 0.6, y = tilde_y, label = "italic(j)",
+           parse = TRUE, size = text_size) +
+  xlim(0, 1) + 
+  theme_void()
+
+# The Bernoulli
+p51 <- tibble(x = 0:1) |> 
+  mutate(d = dbinom(x = x, size = 1, prob = 0.6)) |> 
+  # rescale x axis
+  mutate(x = ifelse(x == 0, x + 0.3, x - 0.3)) |>
+  mutate(d = d / max(d)) |> 
+  
+  ggplot(aes(x = x, y = d)) +
+  geom_col(fill = fill_color_1, width = 0.15) +
+  annotate(geom = "text",
+           x = 0.5, y = 0.2, label = "bernoulli",
+           size = text_size) +
+  annotate(geom = "text",
+           x = 0.5, y = dist_greek_y,
+           label = "theta[italic(j)]",
+           # label = "theta[j]", 
+           parse = TRUE, size = text_size) +
+  xlim(0:1) + 
+  theme_void() +
+  theme(axis.line.x = element_line(linewidth = 0.5))
+
+# The third arrow
+p61 <- tibble(x = 0.5,
+              y = 1:0) |>
+  ggplot(aes(x = x, y = y)) +
+  geom_arrow(length_head = 7, linewidth = 1/2) +
+  annotate(geom = "text",
+           x = 0.37, y = tilde_y, label = "'~'",
+           parse = TRUE, size = text_size) +
+  annotate(geom = "text",
+           x = 0.63, y = tilde_y,
+           label = "italic(i)*'|'*italic(j)",
+           # label = "i*'|'*j",
+           parse = TRUE, size = text_size) +
+  xlim(0, 1) + 
+  theme_void()
+
+# The data y
+p71 <- tibble(x = 0.5,
+              y = 0.5,
+              label = "italic(y)[italic(i)*'|'*italic(j)]") |>
+              # label = "italic(y)[i*'|'*j]") |> 
+  ggplot(aes(x = x, y = y, label = label)) +
+  geom_text(parse = TRUE, size = text_size) +
+  xlim(0, 1) + 
+  theme_void()
+
+layout <- c(
+  # Top beta and gamma
+  area(t = 1, b = 4, l = 1, r = 14),
+  area(t = 1, b = 4, l = 17, r = 30),
+  # Diagonal arrows
+  area(t = 5, b = 7, l = 1, r = 30),
+  # Middle beta
+  area(t = 8, b = 11, l = 9, r = 22),
+  # Middle arrow
+  area(t = 12, b = 14, l = 9, r = 22),
+  # Bernoulli
+  area(t = 15, b = 18, l = 9, r = 22),
+  # Bottom arrow
+  area(t = 19, b = 21, l = 9, r = 22),
+  # Text
+  area(t = 22, b = 22, l = 9, r = 22)
+)
+## Check layout:
+# plot(layout)
+
+(p11 + p12 + p2 + p31 + p41 + p51 + p61 + p71) + 
+  plot_layout(design = layout) &
+  ylim(0, 1)
+```
+
+
+@fig-dependstructjcoins shows the structure of the model. (This sort of model notation and diagram was introduced in @sec-ModelDiagramIntro.) The bottom of the diagram shows that a datum $y_{i|j} \in \{0,1\}$, from the $i^{th}$ flip of the $j^{th}$ coin, depends on the value of the bias parameter $\theta_j$ for that coin:
+\begin{equation}
+y_{i|j} \sim \mbox{bernoulli}(\theta_j)
+\label{eq:tt_y}
+\end{equation}
+Moving up @fig-dependstructjcoins, the next arrow shows that the values of $\theta_j$ depend on the values of the mode parameter $\omega$ and the concentration parameter $\kappa$ for the beta distribution that represents the mint that created the coins: 
+\begin{equation}
+\theta_j \sim \mbox{beta}\Bigl( \, \omega(\kappa-2)+1 \, , \, (1-\omega)(\kappa-2)+1 \, \Bigr)
+\label{eq:tt_theta}
+\end{equation}
+The top level of @fig-dependstructjcoins shows the prior on $\omega$ and $\kappa-2$. Note that the value of $\kappa-2$ must be non-negative, meaning $\kappa > 2$, for the beta distribution to have a mode that is not 0 or 1, and therefore the gamma prior is on $\kappa-2$:
+\begin{align}
+\omega &\sim \mbox{beta}(A_\omega,B_\omega) \label{eq:tt_omega} \\
+\kappa - 2 &\sim \mbox{gamma}(S_\kappa,R_\kappa) \label{eq:tt_kappa}
+\end{align}
+The values in the top-level priors are represented by uppercase letters (e.g., $A_\omega$ instead of $a_\omega$) to suggest that they are constants, not variables. We will choose values that make the distributions very broad and noncommittal. The beta prior on $\omega$ will be (nearly) uniform, so that any value for the mint bias is equally credible. The gamma prior on $\kappa-2$ will be broad, so the prior allows small or large concentrations.
+
+
+### Implemented in Stan {#sec-therap_touch_in_stan}
+
+<!-- We begin by making sure the relevant packages are loaded: -->
+```{r}
+#| echo: false
+#| message: FALSE
+#| warning: FALSE
+library(rstan)
+library(cmdstanr)
+library(posterior)
+library(bayesplot)
+```
+
+
+#### Specify the data
+
+<!-- \vspace{1ex}\noindent -->
+<!-- **Specify the data.**  -->
+
+Data analysis begins with the data. After the structure of the data is established, we can implement the details of the model.
+The data are named `therapeutic_touch` in the dbda3 package.
+```{r}
+therapeutic_touch |> str()
+```
+\noindent Notice above that the `response` values are coded as `correct` or `wrong`, and every response has a corresponding `participant` code, as data should be coded in a real research data file. We will have to convert these character strings to numerical indices for the computations in Stan.
+```{r}
+y <- therapeutic_touch |>  # `correct == 1`, `wrong == 0`
+  transmute(y = ifelse(response == "correct", 1, 0)) |> 
+  pull()
+j <- therapeutic_touch |>  # Consecutive integers
+  transmute(participant = factor(participant) |> as.numeric()) |> 
+  pull()
+n_j <- unique(j) |> length()  # Number of participants
+n_t <- length(y)              # Total number trials
+```
+
+The information we pass to Stan will also include the prior constants, which we will determine by starting with intuitive values for the mode and spread. We specify constants for a beta distribution that is nearly uniform but with a well-defined mode at 0.5:
+```{r}
+beta_ab <- beta_a_b_from_mode_kappa(mode = 0.5, kappa = 2.001)
+beta_a <- beta_ab$a
+beta_b <- beta_ab$b
+```
+```{r}
+#| include: false
+#| echo: false
+## Memo to me... In DBDA2, p. 239, the shape and rate are set to 0.01, 0.01;
+## which is mean=1 and sd=10:
+# gamma_mean_dbda2 <- 1  
+# gamma_sd_dbda2 <- 10 
+# gsr_dbda2 <- gamma_s_r_from_mean_sd( mean=gamma_mean_dbda2 ,
+#                                        sd=gamma_sd_dbda2 )
+## But thus leads to a few divergent transitions in Stan, and puts a huge
+## probability mass on tiny values of kappa_minus_two and then flat tiny prob
+## density on any larger values of kappa_minus_two, so might not be such a great
+## choice.
+```
+\noindent We specify a gamma that spans small and large values:
+```{r}
+#| echo: false
+gamma_mode <- 1  # For future reference in text
+gamma_sd <- 20
+gamma_sr <- gamma_s_r_from_mode_sd(mode = gamma_mode, sd = gamma_sd)
+gamma_s <- gamma_sr$shape
+gamma_r <- gamma_sr$rate
+```
+```{r}
+#| eval: false
+gamma_sr <- gamma_s_r_from_mode_sd(mode = 1, sd = 20)
+gamma_s <- gamma_sr$shape
+gamma_r <- gamma_sr$rate
+```
+\noindent Finally, we assemble the data and prior constants into a `list` that will be passed to Stan:
+```{r}
+data_list <- list(y = y, j = j, n_j = n_j, n_t = n_t,
+                  beta_a = beta_a, beta_b = beta_b, 
+                  gamma_s = gamma_s, gamma_r = gamma_r)
+```
+\noindent Here is what `data_list` looks like:
+```{r}
+data_list |> str()
+```
+
+#### Specify the Stan model
+
+<!-- \vspace{1ex}\noindent -->
+<!-- **Specify the Stan model.** -->
+
+The Stan model specification closely follows the diagram in @fig-dependstructjcoins. At the bottom of the diagram is the data. We have assembled the data, and the prior constants, into a list (see previous section). We need to declare those data and constants in the `data` block. After the `data` block, the `parameters` block declares the parameters. These are the first two blocks in the `model_spec`:
+```{r}
+model_spec <- "
+  data {
+    int<lower=1> n_j;
+    int<lower=1> n_t;
+    array[n_t] int<lower=0, upper=1> y;
+    array[n_t] int<lower=1> j;  // Notice `n_t`, not `n_j`
+    // Prior constants:
+    real<lower=0> beta_a;
+    real<lower=0> beta_b;
+    real<lower=0> gamma_s;
+    real<lower=0> gamma_r;
+  }
+  parameters {
+    array[n_j] real<lower=0, upper=1> theta;  // Individual probability correct
+    real<lower=0, upper=1> omega;             // Group mode
+    real<lower=0> kappa_minus_two;            // Group concentration minus two
+  }
+  transformed parameters {
+    real<lower=0> kappa;
+    kappa = kappa_minus_two + 2;  // C++ uses `=` for assignment
+  }
+  model {
+    omega ~ beta(beta_a, beta_b);
+    kappa_minus_two ~ gamma(gamma_s, gamma_r); 
+    theta ~ beta(omega * (kappa_minus_two) + 1, (1 - omega) * (kappa_minus_two) + 1); 
+    y ~ bernoulli(theta[j]);
+  }
+"
+```
+
+In `model_spec`, above, after the `parameters` block there is a `transformed_parameters` block, which we have not previously seen. Notice in this block the line, `kappa = kappa_minus_two + 2`. This tells Stan to create, at every step in its MCMC chain, another value called `kappa`. This is merely for convenience so that we can easily see the values of `kappa` already stored in Stan's output rather than having to compute it afterwards. In C++, there is no "`<-`" assignment operator, only "`=`".
+
+Finally, in the model specification, above, consider the `model` block at the end. There is a line of code corresponding to every arrow in the diagram in @fig-dependstructjcoins, and also corresponding to Equations \ref{eq:tt_y}---\ref{eq:tt_kappa}.
+
+In the `model` block, the line that indicates `y ~ bernoulli(theta[j])` is vectorized. This means that it implicitly operates on every component of the data vector `y` using corresponding parameter values `theta[j]`. We could instead have made an explicit `for` loop to compute the same values, `for (i in 1:n_t) {y[i] ~ bernoulli(theta[j[i]]);}`, but the vectorized version runs faster. The line that indicates `theta ~ beta(...)` could also have been set inside a `for` loop, `for (k in 1:n_j) {theta[k] ~ beta(...);}`, but the vectorized version runs faster.
+
+The prior on `kappa_minus_two` is a gamma distribution with shape and rate values denoted as `gamma_s` and `gamma_r`. Similarly, the prior on `omega` is a beta distribution with its shape values, `beta_a` and `beta_b`. These constants are delivered from outside the model specification, along with the data, in the `data_list`. Specifying the prior this way allows us to change the prior constants without having to recompile the Stan model. 
+
+#### Compile the model
+
+<!-- \vspace{1ex}\noindent -->
+<!-- **Translate the model to C++ and compile it.**  -->
+
+With the model specified, the commands to compile the model are the same as in @sec-stan_intro_example:
+```{r}
+#| eval: false
+cmdstan_model_obj <- cmdstan_model(stan_file = write_stan_file(model_spec),
+                                   dir = <your_folder>)
+```
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| cache: true
+cmdstan_model_obj <- cmdstan_model( stan_file = write_stan_file(model_spec) ,
+                                    dir = save_file_folder )
+```
+\noindent where `<your_folder>` is a folder of your choice.
+
+#### Generate the MCMC sample
+
+<!-- \vspace{1ex}\noindent -->
+<!-- **Generate the MCMC sample.** -->
+
+The command for running MCMC is just as before, namely `$sample()`, but we may want to adjust the number of steps to be sure ESS is sufficient.
+```{r}
+#| eval: false
+cmdstan_fit <- cmdstan_model_obj$sample(
+  data = data_list,
+  chains = 4, iter_warmup = 200, iter_sampling = 5000, seed = 47)
+```
+```{r}
+#| results: "hide"
+#| echo: FALSE
+if ( run_fresh ) { 
+  cmdstan_fit <- cmdstan_model_obj$sample(
+    data = data_list,
+    chains = 4, iter_warmup = 200, iter_sampling = 5000, seed = 47 )
+  cmdstan_fit$save_object( file = paste0(save_file_folder,"/_cmdstan_fit.RDS") )
+} else {
+  cmdstan_fit <- readRDS( paste0(save_file_folder,"/_cmdstan_fit.RDS") )
+}
+```
+
+#### Check the MCMC diagnostics {#sec-tt_check_diagnostics}
+
+<!-- \vspace{1ex}\noindent -->
+<!-- **Check the MCMC diagnostics.** -->
+
+
+<!-- Visual MCMC diagnostics. ==================================================== -->
+
+```{r}
+#| echo: FALSE
+#| label: fig-stan_tr_den_09
+#| fig-cap: "Posterior produced by Stan. Each panel shows the marginal distribution of one of the 30 parameters in the model. $\\theta_2$ to $\\theta_{27}$ are omitted to save space. Be aware that the posterior is actually a 30-dimensional *joint* distribution. Parameters $\\theta_{1}, \\ldots, \\theta_{28}$, and $\\omega$ range over the interval [0,1], while parameter $\\kappa$ ranges over the interval $[0,\\infty)$."
+#| fig-width: 6.0
+#| fig-height: 1.75
+#| fig-pos: "!tbh"
+
+cmdstan_fit |> as_draws_df() |>
+  bayesplot::mcmc_dens_overlay( 
+    pars = vars(c(`theta[1]`,`theta[28]`,`omega`,`kappa`)),
+    facet_args = list( labeller = label_parsed, 
+                       nrow = 1, 
+                       strip.position = "bottom" ) ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = base_size, 
+                                  margin = margin(t = 0, b = 0)),
+        strip.background = element_blank(),
+        strip.placement = "outside")
+```
+
+*Visual inspection of chains.* 
+@fig-stan_tr_den_09 shows density plots of the posterior distributions of a few parameters (using `bayesplot::mcmc_dens_overlay()` introduced in @sec-check_MCMC_diag). No irregularities appear to pop out. 
+In applications like this with many parameters, visual diagnostics are not routinely reported because they take up so much space and there can be too many variables to inspect. Instead, numerical diagnostics are considered first, and then visual diagnostics might be used to examine any parameters that are badly behaved.
+
+<!-- Numerical MCMC diagnostics. ==================================================== -->
+
+*Inspection of numerical MCMC diagnostics.*  We first extract the chain from the `stan_fit` object using the `as_draws_df()` function. We also append a new variable that is the difference of two individual theta values:
+```{r}
+#| eval: false
+draws_df <- as_draws_df(cmdstan_fit) |>
+  mutate(`theta[28]-theta[1]` = `theta[28]` - `theta[1]`)
+```
+\noindent We will consider the magnitude of this difference later, but we compute the difference at every step in the chain so we can examine its MCMC diagnostics.
+To compute the chain diagnostics, we use the `summarize_draws_dbda3()` function as was explained in @sec-check_MCMC_diag, subsequently `filter`-ing out unwanted variables (recall that you can set `mcse = TRUE` if desired):
+```{r}
+#| eval: false
+stan_fit_diag <- summarize_draws_dbda3(draws_df) |>
+  filter(variable != "lp__" & variable != "kappa_minus_two")
+```
+```{r}
+#| echo: FALSE
+draws_df <- cmdstan_fit |> as_draws_df() |>
+  mutate( "theta[28]-theta[1]" = `theta[28]` - `theta[1]` )
+stan_fit_diag <- draws_df |> summarize_draws_dbda3() |>
+  filter( variable != "lp__" & variable != "kappa_minus_two" )
+```
+\noindent The results are shown in @tbl-diag_tbl_median_09. When there are many parameters, as in this application, a table that includes all the parameters is quite large, and there may not be space in the main report for the full table. Therefore the full table can be presented in supplementary material, and the main document can report whether any parameters or derived variables had inadequate rhat or ESS.
+
+```{r}
+#| echo: FALSE
+#| label: tbl-diag_tbl_median_09
+#| tbl-cap: "Diagnostics for chains produced by Stan. ($\\theta_2$ to $\\theta_{27}$ are omitted to save space.)"
+#| tbl-pos: "!tb"
+
+variable_vec <- c("theta[1]", "theta[28]", "theta[28]-theta[1]", "omega", "kappa")
+
+stan_fit_diag |> 
+  filter( variable %in% variable_vec ) |> 
+  mutate( variable = factor( variable, levels = variable_vec ) ) |>
+  arrange( variable ) |>
+  tt_diag(digits_q = 3, placement = NULL, variable_name = "variable")
+```
+
+Which rhat's, if any, are too big? One approach is simply index the largest `rhat` values with `slice_max()`, and visually check if any are too big:
+```{r}
+#| eval: false
+stan_fit_diag |> 
+  slice_max(order_by = rhat, n = 3) |> 
+  select(variable, rhat)
+```
+```{r}
+#| echo: false
+stan_fit_diag |> 
+  slice_max(order_by = rhat, n = 3) |> 
+  select(variable, rhat) |>
+  tt(height = 0.3) |>
+  # header row:
+  format_tt(i = "colnames", escape = TRUE) |> # handles '_'
+  # variable column:
+  style_tt(j = 1, align = "l") |>
+  style_tt(j = 1, i = 1:3,  monospace = TRUE) |> # i=1:3 matches head(n=3)
+  # rhat:
+  format_tt(j = 2, digits = 5, num_fmt = "decimal", num_zero = TRUE) |>
+  style_tt(j = 2, align = "r") |>
+  # table position:
+  theme_latex(placement = "H")
+```
+\noindent We see that all the rhat's are less than the recommended 1.01.
+
+<!-- The following R code searches the summary diagnostics for any variables with an rhat that exceeds a criterion, and prints the result. -->
+```{r}
+#| echo: false
+#| eval: false
+# Specify critical value of rhat:
+rhat_crit <- 1.01
+# Find which row indices fail to meet the critical value:
+big_rhat_idx <- which( stan_fit_diag$rhat >= rhat_crit )
+# Display the result:
+if ( length(big_rhat_idx) > 0 ) { 
+  print( paste0("Variables with rhat > ", rhat_crit , ":") ) 
+  print( stan_fit_diag[ big_rhat_idx , ] ) 
+} else { print( paste0("All rhat < ",rhat_crit,". (Max rhat is ",
+                       round(max(stan_fit_diag$rhat),4),")") ) }
+```
+
+Which ESS's, if any, are too small? One approach is to list the smallest ESS's in ascending order, and visually check if any are too small. However, each variable has more than one ESS (that is, each variable has an ESS for every quantile), so we first find the minimum ESS of each variable^[Wondering about functions `do.call()`, `pmin()`, and `pick()`? See their help pages. Base R includes `do.call()` and `pmin()`, while `pick()` is from package `dplyr`.], and index the rows with the lowest values with `slice_min()`.
+```{r}
+#| eval: false
+stan_fit_diag |>
+  mutate(ess_min = do.call(what = pmin, args = pick(contains("ess_")))) |> 
+  slice_min(order_by = ess_min, n = 3) |> 
+  select(variable, starts_with("ess"))
+```
+```{r}
+#| echo: false
+stan_fit_diag |>
+  mutate(ess_min = do.call(what = pmin, args = pick(contains("ess_")))) |> 
+  slice_min(order_by = ess_min, n = 3) |> 
+  select(variable, starts_with("ess")) |>
+  tt(height = 0.3) |>
+  # header row:
+  format_tt(i = "colnames", escape = TRUE) |> # handles '_'
+  style_tt(j = 1, i = 1:3,  monospace = TRUE) |> # i=1:3 matches head(n=3)
+  # variable column:
+  style_tt(j = 1, align = "l") |>
+  # ess columns::
+  format_tt(j = 2:4, digits = 0, num_fmt = "decimal", num_zero = TRUE, num_mark_big = ",") |>
+  style_tt(j = 2:4, align = "r") |>
+  # table position:
+  theme_latex(placement = "H")
+```
+\noindent We see that all the ESS's exceed our recommended 4,000.
+
+<!-- The following R code searches the summary diagnostics for any variables with an ESS that falls below a criterion, and prints the result. -->
+```{r}
+#| eval: false
+#| echo: false
+# Specify critical value of ESS:
+ess_crit <- 4000
+# Find which row indices fail to meet the critical value:
+small_ess_idx <- which( select( stan_fit_diag , contains("ess_") ) <= ess_crit , 
+                        arr.ind=TRUE )[,"row"] |> unique() |> sort()
+# Display the result:
+if ( length(small_ess_idx) > 0 ) { 
+  print( paste0("Variables with ESS < ", ess_crit , ":") ) 
+  print( stan_fit_diag |> 
+           slice(small_ess_idx) |> 
+           select(variable, ess_q50, ess_q2.5, ess_q97.5) |>
+           as.data.frame() ) 
+} else { print( paste0("All ESS > ", ess_crit, ". (Min ESS is ", round( 
+  min( select( stan_fit_diag , contains("ess_") ) ), 1), ")") ) }
+```
+
+### Interpretation of results {#sec-therap_results}
+
+Because all the MCMC diagnostics look good, and do not flag anything suspicious, we proceed to examine the posterior distribution and interpret the results.
+
+```{r}
+#| echo: FALSE
+#| eval: false  # #| label: fig-omega_kappa
+#| fig-cap: "Posterior distribution from therapeutic touch data, for selected parameters. Dot and bar mark the median and 95% ETI. Triangle marks the proportion correct in the data. Separation between dot and triangle represents shrinkage. The prior is shown in @fig-omega_kappa_prior. (We have used histograms instead of smoothed density plots to prevent the appearance of values outside the true domain of the parameter.)"
+#| fig-width: 5.0
+#| fig-height: 5.0
+#| fig-pos: "!tb"
+
+# Vestigial
+
+draws_df <- cmdstan_fit |> as_draws_df()
+draws_df <- mutate( draws_df, "theta[28]-theta[1]" = `theta[28]` - `theta[1]` )
+interval_size <- 10
+
+h_omega <- ggplot( data=draws_df , aes( x=`omega` , y=0 ) ) + 
+  stat_histinterval( breaks=seq(0,1,0.02) , fill=fill_color_1 ,
+                     point_interval="median_qi" , .width=0.95 , 
+                     size=interval_size , color=line_color_1 ) +
+  coord_cartesian( xlim=c(0,1) ) +
+  xlab(expression(omega)) +
+  theme( axis.text.y=element_blank(), 
+         axis.ticks.y=element_blank() , 
+         axis.title.y=element_blank()) 
+h_kappa <- ggplot( data=draws_df , aes( x=`kappa` , y=0 ) ) + 
+  stat_histinterval( fill=fill_color_1 , breaks=50 ,
+                     point_interval="median_qi" , .width=0.95 , 
+                     size=interval_size , color=line_color_1 ) +
+  xlab(expression(kappa)) +
+  coord_cartesian(xlim = c(0,150) ) +
+  theme( axis.text.y=element_blank(), 
+         axis.ticks.y=element_blank() , 
+         axis.title.y=element_blank())
+
+# theta 1
+d_idx <- data_list$j == 1 
+zon1 <- sum(data_list$y[d_idx])/length(data_list$y[d_idx])
+h1 <- ggplot( data=draws_df , aes( x=`theta[1]` , y=0 ) ) + 
+  stat_histinterval( breaks=seq(0,1,0.02) , fill=fill_color_1 ,
+                     point_interval="median_qi" , .width=0.95 , 
+                     size=interval_size , color=line_color_1 ) +
+  annotate( geom="point",  x=zon1 , y=0.05 , shape=25 ,
+              # shape=25 filled triangle downward
+              # shape=17 filled triangle upward
+              # see ?points
+              size=interval_size/3 , color=point_color_2, fill=point_color_2 ) +
+  coord_cartesian( xlim=c(0,1) ) +
+  xlab(expression(theta[1])) +
+  theme( axis.text.y=element_blank(), 
+         axis.ticks.y=element_blank() , 
+         axis.title.y=element_blank())
+
+# theta 28
+d_idx <- data_list$j == 28 
+zon28 <- sum(data_list$y[d_idx])/length(data_list$y[d_idx])
+h28 <- ggplot( data=draws_df , aes( x=`theta[28]` , y=0 ) ) + 
+  stat_histinterval( breaks=seq(0,1,0.02) , fill=fill_color_1 ,
+                     point_interval="median_qi" , .width=0.95 , 
+                     size=interval_size , color=line_color_1 ) +
+  annotate( geom="point", x=zon28 , y=0.05 ,  shape=25 ,  
+              # shape=25 filled triangle downward
+              # shape=17 filled triangle upward
+              # see ?points
+              size=interval_size/3 , color=point_color_2, fill=point_color_2 ) +
+  coord_cartesian( xlim=c(0,1) ) +
+  xlab(expression(theta[28])) +
+  theme( axis.text.y=element_blank(), 
+         axis.ticks.y=element_blank() , 
+         axis.title.y=element_blank())
+
+# theta 28 minus theta 1
+h28m1 <- ggplot( data=draws_df , aes( x=`theta[28]-theta[1]` , y=0 ) ) + 
+  stat_histinterval( breaks=seq(-1,1,0.02) , fill=fill_color_1 ,
+                     point_interval="median_qi" , .width=0.95 , 
+                     size=interval_size , color=line_color_1 ) +
+  annotate( geom="point" , x=zon28-zon1 , y=0.05 , shape=25 ,  
+              # shape=25 filled triangle downward
+              # shape=17 filled triangle upward
+              # see ?points
+              size=interval_size/3 , color=point_color_2, fill=point_color_2 ) +
+  coord_cartesian( xlim=c(-1,1) ) +
+  xlab(expression(theta[28]-theta[1])) +
+  theme( axis.text.y=element_blank(), 
+         axis.ticks.y=element_blank() , 
+         axis.title.y=element_blank())
+
+( h_omega | h_kappa ) / ( h1 | h28 ) / ( h28m1 )
+```
+
+```{r}
+#| echo: FALSE
+#| label: fig-omega_kappa
+#| fig-cap: "Posterior distribution from therapeutic touch data, for selected parameters. Dot and bar mark the median and 95% ETI. Diamond marks the proportion correct in the data. Separation between dot and diamond represents shrinkage. The prior is shown in @fig-omega_kappa_prior. (We have used histograms instead of smoothed density plots to prevent the appearance of values outside the true domain of the parameter.)"
+#| fig-width: 5.0
+#| fig-height: 5.0
+#| fig-pos: "!tb"
+
+draws_df <- as_draws_df(cmdstan_fit) |> 
+  mutate(draws_df, "theta[28]-theta[1]" = `theta[28]` - `theta[1]`)
+
+# Save the sample proportions as a vector
+p_vec <- therapeutic_touch |> 
+  group_by(participant) |> 
+  summarise(mean(response == "correct")) |> 
+  pull()
+
+# Global value
+interval_size <- 2  # 10
+
+# Omega
+p11 <- draws_df |> 
+  ggplot(aes(x = omega)) +
+  stat_histinterval(point_interval = median_qi, .width = 0.95,
+                    breaks = seq(from = 0, to = 1, by = 0.02), 
+                    color = line_color_1, fill = fill_color_1, 
+                    size = interval_size) +
+  scale_x_continuous(expression(omega), limits = 0:1)
+
+# Kappa
+p12 <- draws_df |> 
+  ggplot(aes(x = kappa)) +
+  stat_histinterval(point_interval = median_qi, .width = 0.95,
+                    breaks = 50, 
+                    color = line_color_1, fill = fill_color_1, 
+                    size = interval_size) +
+  xlab(expression(kappa)) +
+  coord_cartesian(xlim = c(0, 150))
+
+# Theta[1]
+p21 <- draws_df |> 
+  ggplot(aes(x = `theta[1]`)) +
+  stat_histinterval(point_interval = median_qi, .width = 0.95,
+                    breaks = seq(from = 0, to = 1, by = 0.02), 
+                    color = line_color_1, fill = fill_color_1, 
+                    size = interval_size) +
+  annotate(geom = "point",  
+           x = p_vec[1], y = -0.05, shape = 18,
+           color = point_color_2, size = 3) +
+  scale_x_continuous(expression(theta[1]), limits = 0:1)
+
+# Theta[28]
+p22 <- draws_df |> 
+  ggplot(aes(x = `theta[28]`)) +
+  stat_histinterval(point_interval = median_qi, .width = 0.95,
+                    breaks = seq(from = 0, to = 1, by = 0.02), 
+                    color = line_color_1, fill = fill_color_1, 
+                    size = interval_size) +
+  annotate(geom = "point",  
+           x = p_vec[28], y = -0.05, shape = 18,
+           color = point_color_2, size = 3) +
+  scale_x_continuous(expression(theta[28]), limits = 0:1)
+
+# Theta[28] - theta[1]
+p3 <- draws_df |> 
+  ggplot(aes(x = `theta[28]-theta[1]`)) +
+  stat_histinterval(point_interval = median_qi, .width = 0.95,
+                    breaks = seq(from = -1, to = 1, by = 0.02), 
+                    color = line_color_1, fill = fill_color_1, 
+                    size = interval_size) +
+  annotate(geom = "point",  
+           x = p_vec[28] - p_vec[1], y = -0.05, shape = 18,
+           color = point_color_2, size = 3) +
+  scale_x_continuous(expression(theta[28]-theta[1]), limits = c(-1, 1))
+
+# Combine, adjust, and display
+(p11 | p12) / (p21 | p22) / p3 & scale_y_continuous(NULL, breaks = NULL)
+```
+
+@fig-omega_kappa shows the posterior distribution of $\omega$, which is the group's modal value for probability correct. Notice that the median value of $\omega$ is less than 0.50, and the 95% ETI includes 0.50, which is chance performance. Therefore, as a group, the typical performance was not noticeably different from chance. 
+
+@fig-omega_kappa also shows $\kappa$, which is the concentration of the estimates of individual probabilities correct. It is difficult to interpret specific numerical values of $\kappa$, but larger values imply more concentrated estimated values of $\theta_j$. In other words, the estimate of any individual $\theta_j$ is influenced by that individual's data, $z_j$ and $n_j$, but also by the estimate of the group characteristics, $\omega$ and $\kappa$. This makes intuitive (and mathematical) sense: the estimate of any individual's ability should be informed by our knowledge of other individuals in the same group.
+
+We can also consider individual $\theta$'s and differences of $\theta$'s. The data file happened to arrange the individuals from worst to best proportion correct, so $\theta_1$ will be lowest and $\theta_{28}$ will be highest. @fig-omega_kappa shows the posterior distribution for these individuals. You can see that for both individuals, the 95% ETI includes 0.50, which is chance performance. @fig-omega_kappa also plots the proportion correct, $z_j/n_j$, as a diamond. You can see that the estimated $\theta_j$ is shifted away from the individual proportion correct toward the estimated mode, $\omega$, of the group overall. This shift of individual estimates toward the mode is called *shrinkage*. Shrinkage will be described at length in the next section.
+
+The lower panel of @fig-omega_kappa shows the posterior distribution of the difference, $\theta_{28} - \theta_1$. This distribution was created by computing the difference at every step in the MCMC chain. Remember, every step in the MCMC chain is a *combination* of 30 parameter values that are *jointly* credible, given the data (and the prior). The figure shows that the 95% ETI of the difference includes zero, suggesting there is no notable difference between the best and worst individual. Keep in mind that the individual estimates were pulled closer together by being mutually informative.
+
+It is important to consider the convergence diagnostics for derived variables such as $\theta_{28} - \theta_{1}$ because steps of derived values can be autocorrelated even if there is relatively little autocorrelation in the original parameters, and vice versa. The rhat and ESS for $\theta_{28} - \theta_{1}$ is shown in @tbl-diag_tbl_median_09, where is can be seen that the diagnostics look robust.
+
+The estimates of $\omega$ and $\theta_j$ suggest that the therapeutic-touch practitioners did not noticeably differ from chance performance on this experimental task. Defenders of the practitioners' abilities could argue that the experimental task was not representative of the richness of sensory information and patient interaction in a real, clinical setting. Moreover, the experimental task did not measure real patient outcomes. Follow-up research has been described, for example, by @AstinEtAl2000DistantHealing and by @Tall2003TherapeuticTouch.
+
+
+### Viewing the prior distribution
+
+```{r}
+#| echo: false
+#| results: "hide"
+#| message: false
+#| warning: false
+#| cache: true
+
+model_spec_prior <- "
+  data {
+    int<lower=0> n_t ;
+    int<lower=0> n_j ;
+    array[n_t] int<lower=0,upper=1> y ;
+    array[n_t] int<lower=1> j ; // notice n_t not n_j
+    // prior constants:
+    real<lower=0> beta_a ;
+    real<lower=0> beta_b ;
+    real<lower=0> gamma_s ;
+    real<lower=0> gamma_r ;
+  }
+  parameters {
+    array[n_j] real<lower=0,upper=1> theta ; // individual prob correct
+    real<lower=0,upper=1> omega ;            // group mode
+    real<lower=0> kappa_minus_two ;          // group concentration minus two
+  }
+  transformed parameters {
+    real<lower=0> kappa ;  
+    kappa = kappa_minus_two + 2 ;
+  }
+  model {
+    omega ~ beta( beta_a , beta_b ) ;
+    kappa_minus_two ~ gamma( gamma_s , gamma_r ) ; 
+    theta ~ beta( omega*(kappa_minus_two)+1 , (1-omega)*(kappa_minus_two)+1 ) ;
+    //  y ~ bernoulli(theta[j]) ;
+  }
+" # close quote for model_spec_prior
+
+cmdstan_mo_prior <- 
+  cmdstan_model( stan_file = write_stan_file(model_spec_prior) ,
+                 dir = save_file_folder )
+
+if ( run_fresh ) { 
+  cmdstan_fit_prior <- cmdstan_mo_prior$sample(
+    data = data_list,
+    chains = 4, iter_warmup = 200, thin = 10, iter_sampling = 2500*10, seed = 47 )
+  cmdstan_fit_prior$save_object( file = paste0(save_file_folder,"/_cmdstan_fit_prior.RDS") )
+} else {
+  cmdstan_fit_prior <- readRDS( paste0(save_file_folder,"/_cmdstan_fit_prior.RDS") )
+}
+```
+
+It can be especially interesting to consider the prior distribution of a hierarchical model because we only explicitly specify the prior on the top-level parameters, and the resulting prior on lower-level parameters is only implicit. In the present application, we only explicitly specify the priors on $\omega$ and $\kappa$, and the resulting prior on $\theta_j$, and on differences such as $\theta_{28}-\theta_1$, is not immediately obvious.
+
+In principle, a sample from the prior distribution can be generated simply by omitting the likelihood from the model specification. Then HMC will explore the prior distribution without being influenced by the data. We modify the model specification as follows:
+```{r}
+#| eval: false
+model_spec_prior <- "
+  [... same as before ...]
+  model {
+    omega ~ beta(beta_a, beta_b);
+    kappa_minus_two ~ gamma(gamma_s, gamma_r);
+    theta ~ beta(omega * (kappa_minus_two) + 1, (1 - omega) * (kappa_minus_two) + 1);
+    // y ~ bernoulli(theta[j]);
+  }
+"
+```
+\noindent Notice in the model specification, above, only the line involving `y` is commented out.
+
+Then the prior-only model is processed in Stan the usual way:
+```{r}
+#| eval: false
+cmdstan_mo_prior <- cmdstan_model(
+  stan_file = write_stan_file(model_spec_prior),
+  dir = save_file_folder)
+```
+
+Unfortunately, Stan's HMC algorithm does not do well with very flat distributions, such as what we have specified for $\omega$. Because HMC does not explore flat priors well, we will have to run very long chains. For running long chains, it can help to run parallel cores on your computer; e.g., `options(mc.cores = min(c(4, detectCores())))`. Moreover, because the chains will be very highly autocorrelated, we will "thin" the chains and not store every step. This thinning reduces the amount of information retained, but greatly reduces the size of the stored MCMC chain. Therefore we have specified the `thin` argument, below, to be greater than its default value of 1.
+```{r}
+#| eval: false
+cmdstan_fit_prior <- cmdstan_mo_prior$sample(
+  data = data_list,
+  chains = 4, iter_warmup = 200, thin = 10, iter_sampling = 2500 * 10, seed = 47)
+```
+
+```{r}
+#| echo: false
+#| label: fig-omega_kappa_prior
+#| fig-cap: "Prior distribution for model of therapeutic touch data. Dot and bar mark the median and 95% ETI. Compare with the posterior in @fig-omega_kappa. (We have used histograms instead of smoothed density plots to prevent the appearance of values outside the true domain of the parameter.)"
+#| fig-width: 5.0
+#| fig-height: 5.0
+#| fig-pos: "!tb"
+
+draws_df <- cmdstan_fit_prior |> as_draws_df()
+draws_df <- mutate( draws_df, "theta[28]-theta[1]" = `theta[28]` - `theta[1]` )
+interval_size <- 2  # 10
+
+h_omega <- ggplot( data=draws_df , aes( x=`omega` , y=0 ) ) + 
+  stat_histinterval( breaks=seq(0,1,0.02) , fill=fill_color_1 ,
+                     point_interval="median_qi" , .width=0.95 , 
+                     size=interval_size , color=line_color_1 ) +
+  coord_cartesian( xlim=c(0,1) ) +
+  xlab(expression(omega))
+
+h_kappa <- ggplot( data=draws_df , aes( x=`kappa` , y=0 ) ) + 
+  stat_histinterval( fill=fill_color_1 , breaks=50 ,
+                     point_interval="median_qi" , .width=0.95 , 
+                     size=interval_size , color=line_color_1 ) +
+  coord_cartesian( xlim=c(0,150) ) +
+  xlab(expression(kappa))
+
+h1 <- ggplot( data=draws_df , aes( x=`theta[1]` , y=0 ) ) + 
+  stat_histinterval( breaks=seq(0,1,0.02) , fill=fill_color_1 ,
+                     point_interval="median_qi" , .width=0.95 , 
+                     size=interval_size , color=line_color_1 ) +
+  coord_cartesian( xlim=c(0,1) ) +
+  xlab(expression(theta[1]))
+
+h28 <- ggplot( data=draws_df , aes( x=`theta[28]` , y=0 ) ) + 
+  stat_histinterval( breaks=seq(0,1,0.02) , fill=fill_color_1 ,
+                     point_interval="median_qi" , .width=0.95 , 
+                     size=interval_size , color=line_color_1 ) +
+  coord_cartesian( xlim=c(0,1) ) +
+  xlab(expression(theta[28]))
+
+h28m1 <- ggplot( data=draws_df , aes( x=`theta[28]-theta[1]` , y=0 ) ) + 
+  stat_histinterval( breaks=seq(-1,1,0.02) , fill=fill_color_1 ,
+                     point_interval="median_qi" , .width=0.95 , 
+                     size=interval_size , color=line_color_1 ) +
+  coord_cartesian( xlim=c(-1,1) ) +
+  xlab(expression(theta[28]-theta[1]))
+
+( h_omega | h_kappa ) / ( h1 | h28 ) / ( h28m1 ) &
+  scale_y_continuous(NULL, breaks = NULL)
+```
+The resulting sample from the prior is shown in @fig-omega_kappa_prior. It can be seen that even with long chains, the MCMC chain for the prior is not very smooth. But it is good enough to observe the basic shape and qualities of the prior. We can confirm that $\omega$ is essentially uniform (as it should be), and $\kappa$ is gamma shaped with a mode that appears to match the model specification.
+
+@fig-omega_kappa_prior shows the prior distribution on individual $\theta_j$ and the difference of two $\theta$'s. It can be seen that the prior on any individual $\theta_j$ is symmetric but not flat, instead having rounded shoulders that avoid extreme values near 0 or 1. This rounding of the shoulders might not have been intuitively obvious, but makes sense when considering that, even though $\omega$ is uniform and can be near 0 or 1, the $\theta_j$ values are generated by a beta distribution that spreads out around the $\omega$ value. So, even if $\omega$ is near 0 or 1, the $\theta_j$ values will usually be spread away from $\omega$.
+
+Perhaps more surprising from @fig-omega_kappa_prior is the prior distribution on the difference of two theta values, shown in the lower panel. The prior is noticeably peaked over 0, and perhaps much more narrow than would have been intuitively predicted. There are two main reasons for this peakedness. First, the value of the concentration, $\kappa$, is some value typically (much) larger than 2, meaning that the various $\theta_j$ values will tend to be concentrated near each other, and not spread independently apart. This effect of "shrinkage" from the prior is discussed more in @sec-shrinkage_prior. Second, even when the concentration is very small, and the *joint* prior distribution on the $\theta$'s is nearly uniform, the difference of the two $\theta$'s would be a triangular distribution, not uniform.^[Intuitively, suppose the joint prior is uniform, with $p(\theta_1,\theta_2) = 1.0$. There are many opportunities for $\theta_2-\theta_1=0.0$, including the full range from $\theta_2=1.0$ with $\theta_1=1.0$ to $\theta_2=0.0$ with $\theta_1=0.0$. But there are fewer opportunities for $\theta_2-\theta_1=0.5$, including only the range from $\theta_2=1.0$ with $\theta_1=0.5$ to $\theta_2=0.5$ with $\theta_1=0.0$. And there are far fewer opportunities for $\theta_2-\theta_1=0.9$, including only the tiny range from $\theta_2=1.0$ with $\theta_1=0.1$ to $\theta_2=0.9$ with $\theta_1=0.0$.]
+
+We have seen that in hierarchical models, an explicit prior is specified only for the top-level parameters, which implies a prior on lower-level parameters that might not be intuitively obvious. If the implied prior clashes with modeling intentions, then adjustments in the top-level prior might be considered. This example also highlights the importance of a *prior predictive check* when conducting and reporting an analysis [cf. the BARG, @Kruschke2021BARG].
+
+### Reporting the results
+
+If we were to report this analysis in a scientific journal, we would be sure to provide sufficient detail that the reader could fully comprehend and reproduce the analysis. Guidelines for reporting Bayesian analyses (the BARG) were provided by @Kruschke2021BARG. The BARG are summarized in @sec-barg. An exercise at the end of this chapter challenges you to create such a report. Later chapters, in Part III, will cover reporting in more detail for specific examples, whereas this chapter is focusing on the concepts of hierarchical models.
+
+
+## Shrinkage in hierarchical models {#sec-shrinkage}
+
+In typical hierarchical models, the estimates of low-level parameters are pulled closer together than they would be if there were not a higher-level distribution. We saw a clear example of this in @fig-omega_kappa, which shows that the posterior estimates of individual-level biases, $\theta_j$ (marked by dots in @fig-omega_kappa), were closer to the group-level mode, $\omega$, than the individual proportions correct, $z_j/N_s$ (marked by diamonds in @fig-omega_kappa). This shift of the individual-level parameter estimates toward the group-level mode is called *shrinkage*.
+
+In general, shrinkage in hierarchical models causes low-level parameters to shift toward the modes of the higher-level distribution. If the higher-level distribution has multiple modes, then the low-level parameter values cluster more tightly around those multiple modes, which might actually pull some low-level parameter estimates apart instead of together. Examples are presented in @KruschkeV2015.
+<!-- and at a blog post^[<https://doingbayesiandataanalysis.blogspot.com/2013/03/shrinkage-in-bimodal-hierarchical.html>]. -->
+
+Shrinkage is a rational implication of hierarchical model structure, and is desired by the analyst because the individual parameter estimates are simultaneously informed by what is typical of all the other individuals. 
+Shrinkage can also rein in the estimates of spuriously large outlying individuals.
+Intuitively, shrinkage occurs because the estimate of each individual-level parameter is influenced from two sources: the data directly from that individual, and the data from all the other individuals via the estimate of the group-level distribution. The higher-level parameters are affected by all the data, and therefore the estimate of a low-level parameter is affected indirectly by all the data via their influence on the higher-level parameters.
+
+### Shrinkage is produced by maximizing likelihood {#sec-shrinkage_MLE}
+
+It is important to understand that shrinkage is a consequence of finding parameters that increase likelihood, and not only a consequence of prior distributions. To better understand shrinkage in hierarchical models, we will consider the maximum likelihood estimate (MLE) for the hierarchical model of @fig-dependstructjcoins. The MLE is the set of parameter values that maximizes the probability of the data. To find those values, we need the formula for the probability of the data, given the parameter values. 
+
+For the whole set of data, $\{y_{i|j}\}$, because we assume independence across data values, we take the product of that probability across all the data:
+\begin{align}
+&p\Big( \, \{y_{i|j}\} \, \Big| \, \{\theta_j\} , \omega , \kappa \Big)
+\notag \\
+&=
+\prod_j  \prod_{i|j}
+\mbox{bernoulli}( y_{i|j} | \theta_j ) \,\,
+\mbox{beta}\Big( \theta_j \, \Big| \, \omega (\kappa\!-\!2)\!+\!1 ,  (1\!-\!\omega) (\kappa\!-\!2)\!+\!1 \Big)
+\label{eq:hierMLE}
+\end{align}
+where
+\begin{equation}
+\prod_{i|j} \mbox{bernoulli}( y_{i|j} | \theta_j ) = \theta_j^{z_j} (1-\theta_j)^{(n_j-z_j)}
+\end{equation}
+Remember that the $y_{i|j}$ values are constants, namely the 0's and 1's in the data. Our goal here is to find the values of the parameters in the formula that will maximize the probability of the data. You can see that $\theta_j$ participates in both the low-level data probability, $\prod_{i|j} \mbox{bernoulli}( y_{i|j} | \theta_j )$, and in the high-level group probability, $\mbox{beta}( \theta_j \, | \, \omega (\kappa\!-\!2)+\!1 ,  (1\!-\!\omega) (\kappa\!-\!2)\!+\!1)$. The value of $\theta_j$ that maximizes the low-level data probability is the data proportion, $z_j/N_s$. The value of $\theta_j$ that maximizes the high-level group probability is the higher-level mode, $\omega$. The value of $\theta_j$ that maximizes the product of low-level and high-level falls between the data proportion, $z_j/N_s$, and the higher-level mode, $\omega$. Therefore, the most probable values of $\theta_j$ will tend to be shifted away from $z_j/N_s$ toward the estimate of $\omega$.
+
+<!-- To illustrate a concrete calculation of MLE, we will convert Equation \ref{eq:hierMLE} to its logarithmic form, and instead of maximizing the likelihood, we will minimize the *negative log-likelihood* (NLL). We convert to logarithm merely for computational purposes, because products of probabilities (as in Equation \ref{eq:hierMLE}) can often become too small to represent in computers (that is, they "underflow" the accuracy of the computer and get rounded to zero). Logarithmic values rarely have this problem. -->
+
+<!-- Taking the negative logarithm of Equation \ref{eq:hierMLE} yields -->
+<!-- \begin{align} -->
+<!-- &-\log \Bigg( p\Big( \, \{y_{i|j}\} \, \Big| \, \{\theta_j\} , \omega , \kappa \Big) \Bigg) -->
+<!-- \notag \\ -->
+<!-- &\hspace*{6ex} = -->
+<!-- \sum_s -->
+<!-- z_j \log( \theta_j ) + (n_j-z_j) \log( 1-\theta_j) \notag \\ -->
+<!-- &\hspace*{12ex} + \log\Bigg( -->
+<!-- \mbox{beta}\Big( \theta_j \, \Big| \, \omega (\kappa\!-\!2)\!+\!1 ,  (1\!-\!\omega) (\kappa\!-\!2)\!+\!1 \Big) -->
+<!-- \Bigg) -->
+<!-- \label{eq:hierMLEneglog} -->
+<!-- \end{align} -->
+<!-- We can program Equation \ref{eq:hierMLEneglog} into R as a function. In the code chunk below, read the comments that explain the arguments and processing. The function assembles the parameters as a vector, instead of as separate variables, for subsequent use in optimization algorithms. -->
+```{r}
+#| echo: false
+neg_log_lik = function( param , z , n ) {
+  ##   param = c( theta_1 , ... , theta_j , omega , kappa )
+  ##   z     = c( z_1 , ... , z_j )
+  ##   n     = c( n_1 , ... , n_j )
+  # Convert param components to meaningful names, and 
+  # ensure that the parameter values respect range restrictions:
+  theta <- pmax( 0.00001 , pmin( 0.99999 , param[1:(length(param)-2)] ) )
+  omega <- pmax( 0.00001 , pmin( 0.99999 , param[length(param)-1] ) )
+  kappa <- pmax( 2.00000 , param[length(param)] )
+  # Convert omega,kappa to a,b:
+  a <- omega * (kappa-2) + 1
+  b <- (1-omega) * (kappa-2) + 1
+  # Compute log likelihood; first bernoulli, then beta, then add:
+  log_p_data_g_theta <- z * log(theta) + (n-z) * log(1-theta) # vector
+  log_p_theta_g_ab <- dbeta( theta , a , b , log=TRUE ) # vector
+  neg_log_lik <- -sum( log_p_data_g_theta + log_p_theta_g_ab )
+  return( neg_log_lik )
+}
+```
+<!-- We can specify data and candidate parameter values and compute the NLL. -->
+<!-- To make it easy to visualize for this example, we create five data proportions, $z_1/n_1, ... , z_5/n_5$, that are symmetrically arranged around 0.5: -->
+```{r}
+#| echo: false
+z_ex <- c(15, 20, 25, 30, 35)
+n_ex <- c(50, 50, 50, 50, 50)
+# print( z_ex / n_ex )
+```
+<!-- It is natural to try parameter values that respect the symmetry of the data. We will first try $\theta_j$ values that exactly match the data proportions, and a value for $\omega$ that also matches the overall data proportion, and a value for $\kappa$ that treats all $\theta_j$ nearly equally, as follows: -->
+```{r}
+#| echo: false
+param_try <- c( theta = z_ex / n_ex , omega = sum(z_ex)/sum(n_ex) , kappa = 2.01 )
+# print( param_try )
+```
+```{r}
+#| echo: FALSE
+nll_try <- neg_log_lik( param=param_try, z=z_ex, n=n_ex )
+```
+<!-- Then we compute the NLL of the data for this choice of parameter values by using the function we defined above: `neg_log_lik( param_try, z_ex, n_ex )`. The resulting NLL is `r round(nll_try,2)`, which will be compared with the NLL's for other choices of parameter values. -->
+
+<!-- Although the choice of parameter values we tried above is reasonable because the $\theta_j$ values exactly match the data proportions, the question is, *What choice of parameter values maximizes the likelihood?* Or, equivalently, *What choice of parameter values minimizes the NLL?* -->
+<!-- We used R's built-in `optim()` function to find the best parameter values, but we used some tricks to preserve symmetry for this simple example and we therefore will not take the space to show the details. -->
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| message: FALSE
+
+## Plain optim() does not work well at all, goes asymmetric:
+# optim_info = optim( par = param_init , fn = neg_log_lik , gr=NULL , z=z, n=n)
+# neg_log_lik( param=optim_info$par , z=z , n=n )
+
+# Create specialized function for our simplified example:
+neg_log_lik_sym = function( param=c(0.3,0.4,20.0) , z=c(3,4) , n=rep(10,2) , verbose=FALSE ) {
+  ## Arguments:
+  ## ASSUMES 5 DISTINCT Z/N, CENTERED ON 0.5, SYMMETRIC
+  ## omega=0.5, theta_1=theta_5, theta_2=theta_4, theta_3=0.5
+  ##   param is theta_1, theta_2, kappa
+  ##   z is z_1, z_2.
+  ##   n is n_1, n_2.
+  # Convert param components to meaningful names, and 
+  # check that input parameter values respect restrictions:
+  theta <- pmax( 0.00001 , pmin( 0.99999 , param[1:2] ) )
+  omega <- 0.5
+  kappa <- pmax( 2.00001 , param[3] )
+  # Convert to a,b values:
+  a <- omega * (kappa-2) + 1
+  b <- (1-omega) * (kappa-2) + 1
+  log_p_data_g_theta <- (
+    2* ( z[1] * log(theta[1]) + (n[1]-z[1]) * log(1-theta[1]) ) +
+    2* ( z[2] * log(theta[2]) + (n[2]-z[2]) * log(1-theta[2]) ) +
+    (n[1]/2) * log(0.5) + (n[1]/2) * log(1-0.5) ) # scalar
+  log_p_theta_g_ab <- (
+    2* dbeta( theta[1] , a , b , log=TRUE ) +
+    2* dbeta( theta[2] , a , b , log=TRUE ) +
+    dbeta( 0.5 , a , b , log=TRUE ) ) # scalar
+  neg_log_lik <- -( log_p_data_g_theta + log_p_theta_g_ab )
+  if ( verbose ) { print( c(param,neg_log_lik) ) }
+  return( neg_log_lik )
+}
+
+## At initial parameters:
+# neg_log_lik_sym( param_try[c(1,2,7)], z=z_ex[1:2] , n=n_ex[1:2] )
+
+opt_info <- optim( par=param_try[c(1,2,7)] , fn=neg_log_lik_sym , gr=NULL , 
+                   z=z_ex[1:2] , n=n_ex[1:2] )
+param_opt <- c(  theta1 = unname(opt_info$par[1]) , 
+                 theta2 = unname(opt_info$par[2]) , 
+                 theta3 = 0.5 , 
+                 theta4 = unname(1-opt_info$par[2]) , 
+                 theta5 = unname(1-opt_info$par[1]) , 
+                 omega = 0.5 , 
+                 kappa = unname(opt_info$par[3]) )
+
+nll_opt <- neg_log_lik( param=param_opt, z=z_ex, n=n_ex )
+
+## At optimal parameters:
+# neg_log_lik_sym( opt_info$par, z=z_ex[1:2] , n=n_ex[1:2] )
+```
+
+```{r}
+#| echo: FALSE
+#| eval: FALSE
+#| warning: FALSE
+#| message: FALSE  # #| label: fig-shrinkage
+#| fig-width: 6.0
+#| fig-height: 3.0
+#| fig-cap: "Diamonds mark the values of $z_j/n_j$ on the horizontal axis; dots mark the values of $\\theta_j$. Distributions show beta densities with the annotated $\\omega$ and $\\kappa$. Left panel shows a candidate choice of parameters without shrinkage. Right panel shows the maximum-likelihood estimate (MLE) of parameters, in which $\\theta_j$ show shrinkage toward $\\omega$."
+#| fig-pos: "!tb"
+
+# Vestigial and superseded by the code block below
+
+# Assemble data, parameters, and beta curves into data frame for graphing:
+t_comb <- seq(0,1,length=201)
+
+a_try <- param_try["omega"]*(param_try["kappa"]-2)+1
+b_try <- (1-param_try["omega"])*(param_try["kappa"]-2)+1
+beta_try <- dbeta( t_comb , a_try , b_try )
+
+a_opt <- param_opt["omega"]*(param_opt["kappa"]-2)+1
+b_opt <- (1-param_opt["omega"])*(param_opt["kappa"]-2)+1
+beta_opt <- dbeta( t_comb , a_opt , b_opt )
+
+beta_try_df <- data.frame( t_comb , d_beta=beta_try )
+beta_opt_df <- data.frame( t_comb , d_beta=beta_opt )
+
+# beta_df <- data.frame( 
+#   param_id = c( rep("try",length(t_comb)), rep("opt",length(t_comb)) ) ,
+#   t_comb = c( t_comb , t_comb ) ,
+#   d_beta = c( beta_try , beta_opt ) )
+
+data_ht <- -1.7
+theta_ht <- -0.7
+
+g_try <- ggplot( beta_try_df , aes( x=t_comb , y=d_beta ) ) + 
+  geom_path( linewidth=1 , color=border_color_1 ) +
+  geom_area( fill=fill_color_1 ) +
+  ylim(c(-2,5)) +
+  geom_segment( data=data.frame( x=z_ex/n_ex , xend = param_try[1:5] ,
+                                 y = rep(data_ht+0.1,5) , yend = rep(theta_ht-0.1,5) ) ,
+                aes(x = x , xend=xend, y = y , yend = yend ) ,
+                arrow = arrow(length = unit(3, "pt")) ,
+                color=line_color_2 , linewidth=1 ) +
+  geom_point( data=data.frame( data_prop=z_ex/n_ex , y=rep(data_ht,5) ),
+              aes( x=data_prop , y=y ) , shape="diamond" ,
+              color=point_color_1 , size=6  ) +
+  annotate( "text" , x=0.2 , y=data_ht ,  size=5, hjust="right",
+            label = deparse(bquote(z[j]/n[j])) ,
+            parse = TRUE ) +
+  geom_point( data=data.frame( theta=param_try[1:5] , y=rep(theta_ht,5) ),
+              aes( x=theta , y=y ) , shape="circle" ,
+              color=point_color_1 , size=5  ) +
+  annotate( "text" , x=0.2 , y=theta_ht , 
+            label = deparse(bquote(theta[j])), parse=TRUE , size=5, hjust="right") +
+  annotate( "text" , x=0.5 , y=2.0 , size=5 ,
+            label=deparse(
+              bquote( omega *" = "* .(unname(param_try["omega"])) 
+                          *", "* kappa *" = "* .(unname(param_try["kappa"])))
+              ) ,
+            parse=TRUE ) +
+  # labs( title = "Not Shrunken Parameters" ,
+  #       subtitle = bquote(
+  #                    "Likelihood = "*.(signif(exp(-nll_try),5)) 
+  #                    # *
+  #                    # ", " 
+  #                    # * 
+  #                    # "NLL = "*.(signif(nll_try,5))
+  #                  )) +
+  labs( title = "Not Shrunken Parameters" ) +
+  annotate( "text", x=0.5, y = Inf, hjust = 0.5, vjust = 1.5,
+            label = deparse(bquote("Likelihood = "*.(signif(exp(-nll_try),5)))),
+            parse = TRUE ) +
+  theme( plot.subtitle = element_text(hjust = 0.5) ,
+         axis.ticks.y=element_blank() , 
+         axis.text.y=element_blank() , 
+         axis.title.y=element_blank() ) + 
+  xlab( bquote(theta) )
+
+g_opt <- ggplot( beta_opt_df , aes( x=t_comb , y=d_beta ) ) + 
+  geom_path( linewidth=1 , color=border_color_1 ) +
+  geom_area( fill=fill_color_1 ) +
+  ylim(c(-2,5)) +
+  geom_segment( data=data.frame( x=z_ex/n_ex , xend = param_opt[1:5] ,
+                                 y = rep(data_ht+0.1,5) , yend = rep(theta_ht-0.1,5) ) ,
+                aes(x = x , xend=xend, y = y , yend = yend ) ,
+                arrow = arrow(length = unit(3, "pt")) ,
+                color=line_color_2 , linewidth=1 ) +
+  geom_point( data=data.frame( data_prop=z_ex/n_ex , y=rep(data_ht,5) ),
+              aes( x=data_prop , y=y ) , shape="diamond" ,
+              color=point_color_1 , size=6  ) +
+  annotate( "text" , x=0.2 , y=data_ht , label=deparse(bquote(z[j]/n[j])), parse=TRUE , size=5, hjust="right") +
+  geom_point( data=data.frame( theta=param_opt[1:5] , y=rep(theta_ht,5) ),
+              aes( x=theta , y=y ) , shape="circle" ,
+              color=point_color_1 , size=5  ) +
+  annotate( "text" , x=0.2 , y=theta_ht , 
+            label=deparse(bquote(theta[j])), parse=TRUE , size=5, hjust="right") +
+  annotate( "text" , x=0.5 , y=2.0 , size=5 ,
+            label=deparse( 
+              bquote( omega *" = "* .(unname(param_opt["omega"])) 
+                      *", "* kappa *" = "* .(round(unname(param_opt["kappa"]),2)) )
+            ),
+            parse=TRUE ) +
+  # labs( title = "MLE, Shrunken Parameters" ,
+  #       subtitle = bquote(
+  #                    "Likelihood = "*.(signif(exp(-nll_opt),5)) 
+  #                    # *
+  #                    # ", " 
+  #                    # * 
+  #                    # "NLL = "*.(signif(nll_opt,5))
+  #                  )) +
+  labs( title = "MLE, Shrunken Parameters" ) +
+  annotate( "text", x=0.5, y = Inf, hjust = 0.5, vjust = 1.5,
+            label = deparse(bquote("Likelihood = "*.(signif(exp(-nll_opt),5)))),
+            parse = TRUE ) +
+  theme( plot.subtitle = element_text(hjust = 0.5) ,
+         axis.ticks.y=element_blank() , 
+         axis.text.y=element_blank() , 
+         axis.title.y=element_blank() ) + 
+  xlab( bquote(theta) )
+
+( g_try | g_opt )
+```
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| message: FALSE
+#| label: fig-shrinkage
+#| fig-width: 6.0
+#| fig-height: 3.0
+#| fig-cap: "Diamonds mark the values of $z_j/n_j$ on the horizontal axis; dots mark the values of $\\theta_j$. Distributions show beta densities with the annotated $\\omega$ and $\\kappa$. Left panel shows a candidate choice of parameters without shrinkage. Right panel shows the maximum-likelihood estimate (MLE) of parameters, in which $\\theta_j$ show shrinkage toward $\\omega$."
+#| fig-pos: "!tb"
+
+# Densities
+fig_df <- bind_rows(param_try, param_opt) |>
+  mutate(model = c("try", "opt"),
+         a = omega * (kappa - 2) + 1,
+         b = (1 - omega) * (kappa - 2) + 1) |>
+  select(model, omega, kappa, a, b) |>
+  expand_grid(theta = seq(from = 0, to = 1, length.out = 501)) |>
+  mutate(density = dbeta(x = theta, shape1 = a, shape2 = b)) |> 
+  mutate(model = factor(model, 
+                        levels = c("try", "opt"),
+                        labels = c("Not shrunken parameters",
+                                   "MLE, shrunken parameters")))
+
+# Point estimates
+estimate_df <- fig_df |> 
+  distinct(model) |> 
+  expand_grid(ratio = z_ex / n_ex) |> 
+  mutate(j = rep(1:5, times = 2),
+         theta = c(param_try[1:5], param_opt[1:5])) |> 
+  pivot_longer(cols = c(ratio, theta), values_to = "theta") |> 
+  mutate(density = ifelse(name == "ratio", -1.7, -0.7))
+
+# Likelihood values
+text_1_df <- fig_df |> 
+  distinct(model) |> 
+  mutate(lik = ifelse(model == "Not shrunken parameters", nll_try, nll_opt)) |> 
+  mutate(label = str_c("Likelihood==", signif(exp(-lik), 5)),
+         # label = str_c("{NLL==", signif(lik, 5), "}*', '*Likelihood==", signif(exp(-lik), 5)),
+         theta = 0.5,  # 0
+         density = 4.8)
+
+# Omega and kappa values
+text_2_df <- fig_df |> 
+  distinct(model, omega, kappa) |> 
+  mutate(label = str_c("{omega==", omega, "}*', '*kappa==", round(kappa, digits = 2)))
+
+# Estimate types
+text_3_df <- estimate_df |> 
+  distinct(model, name, density) |> 
+  mutate(label = ifelse(name == "ratio",
+                        "italic(z[j])/italic(n[j])",
+                        "theta[italic(j)]"),
+         theta = 0.25)
+
+# Plot
+fig_df |> 
+  ggplot(aes(x = theta, y = density)) +
+  geom_area(fill = fill_color_1) +  # Densities
+  geom_text(data = text_1_df,       # Likelihood values
+            aes(label = label),
+            parse = TRUE, size = 3.75, vjust = 0) +
+  geom_text(data = text_2_df,       # Omega and kappa values
+            aes(x = 0.5, y = 2, label = label),
+            parse = TRUE, size = 4.5) +
+  geom_text(data = text_3_df,       # Estimate types
+            aes(label = label),
+            hjust = 1, parse = TRUE, size = 3.75) +
+  geom_line(data = estimate_df,     # Point estimate lines
+            aes(group = j)) +
+  geom_point(data = estimate_df,    # Point estimate shapes
+             aes(color = name, shape = name, size = name)) +
+  scale_x_continuous(expression(theta), breaks = 0:4 / 4) +
+  scale_y_continuous(NULL, breaks = NULL, limits = c(-2, 5)) +
+  scale_color_manual(values = c(point_color_2, point_color_1), breaks = NULL) +
+  scale_shape_manual(values = c(18, 19), breaks = NULL) +
+  scale_size_manual(values = c(4, 3), breaks = NULL) +
+  facet_wrap(~ model)
+```
+
+@fig-shrinkage illustrates two sets of parameters and their resulting likelihoods, for a simple example in which there are `r length(z_ex)` individuals all with $N=$ `r n_ex[1]` and proportions $z/N$ of `r z_ex[1]/n_ex[1]`, `r z_ex[2]/n_ex[2]`, `r z_ex[3]/n_ex[3]`, `r z_ex[4]/n_ex[4]`, and `r z_ex[5]/n_ex[5]`, as shown in @fig-shrinkage. The left panel of @fig-shrinkage shows candidate parameter values with $\theta_j$ matching $z_j/n_j$, and $\kappa$ set so the beta distribution is essentially flat. By contrast, the right panel of @fig-shrinkage shows the MLE values of the parameters. You can see that the $\theta_j$ values are shrunken together toward $\omega$, and the larger $\kappa$ makes the beta distribution peaked over the $\theta_j$ values. Annotations in the two panels show the likelihoods. The likelihood values (`r signif( exp(-nll_try) , 5 )` and `r signif( exp(-nll_opt) , 5)`) may seem to be very small, but this is a mathematical consequence of multiplying many `bernoulli` probabilities together. The exact magnitude of the likelihood is not usually important; what matters is the likelihood relative to other choices of parameter values. *The maximum likelihood is `r round( exp( -nll_opt - -nll_try ) , 2)` times higher than the likelihood of the not-shrunken parameter values.*
+
+Intuitively, shrinkage occurs because the data from all individuals influence the higher-level distribution, which in turn influences the estimates of each individual. The estimate of $\theta_j$ is a compromise between the data $z_j/N_s$ of that individual and the group-level distribution informed by all the individuals. 
+<!-- Mathematically, the compromise is expressed by having to jointly maximize  -->
+<!-- $\prod_{i|j} \mbox{bern}( y_{i|j} | \theta_j )$  -->
+<!-- and  -->
+<!-- $\mbox{beta}( \theta_j \, | \, \omega (\kappa\!-\!2)\!+\!1 , (1\!-\!\omega) (\kappa\!-\!2)\!+\!1 )$. -->
+<!-- The first term is maximized by $\theta_j = z_j/N_s$ and the second term is maximized by $\theta_j = \omega$.  As $\theta_j$ is pulled away from $z_j/N_s$ toward $\omega$, the first term gets smaller but the second term gets larger. The MLE finds the best compromise between the two factors. -->
+Mathematically, shrinkage increases the overall likelihood because, even though $\mbox{bernoulli}(z_j,n_j|\theta_j)$ decreases when $\theta_j \ne z_j/n_j$, $\mbox{beta}(\theta_j|\omega,\kappa)$ increases when the $\theta_j$'s shrink toward $\omega$ and $\kappa$ increases.
+
+### Shrinkage is affected by the prior {#sec-shrinkage_prior}
+
+In the example of @fig-shrinkage, shrinkage occurred from maximum likelihood alone, without any influence of a prior distribution. However, in a Bayesian model the prior can be an additional source of shrinkage. Indeed, some priors are intentionally designed to impose more or less shrinkage. 
+
+For example, the prior distribution in @fig-omega_kappa_prior imposes shrinkage on the $\theta_j$ values to the extent that large values of $\kappa$ are preferred by the gamma prior. Remember, the value of $\kappa$ is the concentration, or consistency, of the $\theta_j$ values generated by the gamma prior, so a large $\kappa$ implies concentrated $\theta_j$ values. When the gamma prior on $\kappa$ encourages large values of $\kappa$ and discourages small values of $\kappa$, then shrinkage can be extreme. Shrinkage is least when the gamma prior *dis*courages large values of $\kappa$. 
+
+```{r}
+#| echo: FALSE
+#| message: FALSE
+#| warning: FALSE
+
+# Extract existing MEDIUM kappa prior results.
+# These values are used only for reporting in text, not for running models.
+theta_tt_q50_medium <- stan_fit_diag |>  
+  filter( variable == "theta[1]"  | variable == "theta[28]" ) |> 
+  select( "q50" )
+
+# New contrasting case: WIDE kappa prior constants.
+gamma_mode_wide <- 10
+gamma_sd_wide <- 100
+gsr <- gamma_s_r_from_mode_sd( mode = gamma_mode_wide , sd = gamma_sd_wide )
+gamma_s <- gsr$shape
+gamma_r <- gsr$rate
+bab <- beta_a_b_from_mode_kappa( mode = 0.5 , kappa = 2.001 )
+beta_a <- bab$a
+beta_b <- bab$b
+data_list_wide <- list( y = y, j = j, n_j = n_j, n_t = n_t ,
+                   beta_a = beta_a , beta_b = beta_b , 
+                   gamma_s = gamma_s , gamma_r = gamma_r )
+if ( run_fresh ) { 
+  cmdstan_fit_wide <- cmdstan_model_obj$sample(
+    data = data_list_wide,
+    chains = 4, iter_warmup = 200, iter_sampling = 5200, seed = 47 )
+  cmdstan_fit_wide$save_object( file = paste0(save_file_folder,"/_cmdstan_fit_wide.RDS") )
+} else {
+  cmdstan_fit_wide <- readRDS( paste0(save_file_folder,"/_cmdstan_fit_wide.RDS") )
+}
+draws_df_wide <- as_draws_df( cmdstan_fit_wide ) 
+diag_tbl_wide <- summarize_draws_dbda3( draws_df_wide ) |>
+  filter( variable != "lp__" & variable != "kappa_minus_two" )
+theta_tt_q50_wide <- diag_tbl_wide |> 
+  filter( variable == "theta[1]"  | variable == "theta[28]" ) |> 
+  select( "q50" )
+
+# Specify NARROW kappa prior constants:
+gamma_mode_narrow <- 0.5
+gamma_sd_narrow <- 0.5
+gsr <- gamma_s_r_from_mode_sd( mode=gamma_mode_narrow , sd=gamma_sd_narrow )
+gamma_s <- gsr$shape
+gamma_r <- gsr$rate
+bab <- beta_a_b_from_mode_kappa( mode=0.5 , kappa=2.001 )
+beta_a <- bab$a
+beta_b <- bab$b
+data_list_narrow <- list( y = y, j = j, n_j = n_j, n_t = n_t ,
+                   beta_a = beta_a , beta_b = beta_b , 
+                   gamma_s = gamma_s , gamma_r = gamma_r )
+if ( run_fresh ) { 
+  cmdstan_fit_narrow <- cmdstan_model_obj$sample(
+    data = data_list_narrow,
+    chains = 4, iter_warmup = 200, iter_sampling = 5200, seed = 47 )
+  cmdstan_fit_narrow$save_object( file = paste0(save_file_folder,"/_cmdstan_fit_narrow.RDS") )
+} else {
+  cmdstan_fit_narrow <- readRDS( paste0(save_file_folder,"/_cmdstan_fit_narrow.RDS") )
+}
+draws_df_narrow <- as_draws_df( cmdstan_fit_narrow ) 
+diag_tbl_narrow <- summarize_draws_dbda3( draws_df_narrow ) |>
+  filter( variable != "lp__" & variable != "kappa_minus_two" )
+theta_tt_q50_narrow <- diag_tbl_narrow |> 
+  filter( variable == "theta[1]"  | variable == "theta[28]" ) |> 
+  select( "q50" )
+```
+
+```{r}
+#| echo: false
+#| warning: FALSE
+#| message: FALSE
+#| label: fig-shrinkage_kappa
+#| fig-cap: "When analyzing the therapeutic-touch data, shrinkage on individual estimates depends on the prior on $\\kappa - 2$. When the prior emphasizes large values of $\\kappa - 2$, there is greater shrinkage than when the prior suppresses large values of $\\kappa - 2$."
+#| fig-width: 5.0
+#| fig-height: 2.0
+#| fig-pos: "!tb"
+
+cmdstan_fit_draws <- as_draws_df(cmdstan_fit)
+cmdstan_fit_wide_draws <- as_draws_df(cmdstan_fit_wide)
+cmdstan_fit_narrow_draws <- as_draws_df(cmdstan_fit_narrow)
+
+bind_rows(
+  # cmdstan_fit_draws,
+  cmdstan_fit_wide_draws,
+  cmdstan_fit_narrow_draws ) |> 
+  mutate( prior = c( # rep("Medium prior, \nhigh and low values", 
+    #      nrow(cmdstan_fit_draws)),
+    rep("Large values\nemphasized", 
+        nrow(cmdstan_fit_wide_draws)),
+    rep("Large values\nsuppressed", 
+        nrow(cmdstan_fit_narrow_draws)) ) # |> 
+    # factor(levels = c("narrow", "medium", "wide")) 
+  ) |> 
+  # mutate(`theta[28]-theta[1]` = `theta[28]` - `theta[1]`) |>
+  pivot_longer(cols = c(`theta[1]`, `theta[28]`) ) |> # , `theta[28]-theta[1]`)) |>
+
+  ggplot(aes(x = value, y = prior)) +
+  stat_histinterval(point_interval = median_qi, .width = 0.95,
+                    breaks = 40, color = line_color_1, 
+                    fill = fill_color_1, normalize = "panels") +
+  scale_x_continuous(NULL, breaks = -2:2 / 2) +
+  scale_y_discrete(expression("Prior on "*(kappa-2)), 
+                   expand = expansion(mult = 0.05)) +
+  expand_limits(x = 0:1) +
+  # ggtitle( expression("Posterior shrinkage affected by the prior on "*(kappa - 2)) ) +
+  facet_wrap(~ name, labeller = label_parsed, scales = "free_x", strip.position = "bottom")  +
+  theme(axis.text.y = element_text(vjust = 0.0),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text = element_text(size = base_size, margin = margin(t = 0, b = 0)))
+```
+
+You can see for yourself by re-running the therapeutic-touch example with different specifications of the gamma prior. This is easy to do because the Stan model was specified with the prior constants delivered with the data instead of being fixed in the model specification itself. 
+
+Recall from @tbl-diag_tbl_median_09 that when the gamma prior on $\kappa-2$ has mode=`r gamma_mode` and sd=`r gamma_sd`, then the posterior median for $\theta_1$ is `r round(theta_tt_q50_medium[1,1],3)` and `r round(theta_tt_q50_medium[2,1],3)` for $\theta_{28}$, which yields a difference of $\theta_{28} - \theta_{1} =$ `r  round(theta_tt_q50_medium[2,1] - theta_tt_q50_medium[1,1],3)`, as was illustrated in @fig-omega_kappa.
+
+If instead the gamma prior on $\kappa-2$ is set to favor larger values, with mode=`r gamma_mode_wide` and sd=`r gamma_sd_wide`, then the posterior median for $\theta_1$ is `r round(theta_tt_q50_wide[1,1],3)` and `r round(theta_tt_q50_wide[2,1],3)` for $\theta_{28}$, which yields a difference $\theta_{28} - \theta_{1}$ of only `r  round(theta_tt_q50_wide[2,1] - theta_tt_q50_wide[1,1],3)`. In other words, they are shrunken together more. See @fig-shrinkage_kappa.
+By contrast, when the gamma prior on $\kappa-2$ is set to suppress larger values, with mode=`r gamma_mode_narrow` and sd=`r gamma_sd_narrow`, then the posterior median for $\theta_1$ is `r round(theta_tt_q50_narrow[1,1],3)` and `r round(theta_tt_q50_narrow[2,1],3)` for $\theta_{28}$, which yields a difference $\theta_{28} - \theta_{1}$ of `r  round(theta_tt_q50_narrow[2,1] - theta_tt_q50_narrow[1,1],3)`. Thus, they are shrunken together less. Again, see @fig-shrinkage_kappa.
+<!-- The exercises at the end of this chapter for a bit more detail about generating these results. -->
+
+Hierarchical models typically have high-level parameters (such as $\kappa$ in this example) that control the concentration, or spread, of lower-level parameters (such as $\theta_j$ in this example). The priors on those higher-level concentration or spread parameters will affect the degree of shrinkage.
+
+In summary, we are emphasizing that shrinkage occurs in hierarchical models from maximizing likelihood without the influence of a prior, but priors can also influence shrinkage. Often, priors encourage more shrinkage, but sometimes priors can inhibit shrinkage.
+
+
+### Shrinkage is affected by amount of data {#sec-shrinkage_data}
+
+```{r}
+#| echo: FALSE
+#| message: FALSE
+#| warning: FALSE
+
+# re-set original example prior:
+gsr <- gamma_s_r_from_mode_sd( mode = gamma_mode , sd = gamma_sd )
+gamma_s <- gsr$shape
+gamma_r <- gsr$rate
+
+# Create Data Set A:
+n_ps <- 10 # number flips per subject
+n_jpp <- 10 # number subjects per proportion
+y <- vector()
+p_vec <- c(3,7)
+for ( z_ps in p_vec ) {
+  y <- c( y , rep( c(rep(1,z_ps),rep(0,n_ps-z_ps)) , n_jpp ) )
+}
+j <- rep( 1:(length(p_vec)*n_jpp) , each=n_ps )
+n_j <- length( unique( j ) )          # number of subjects
+n_t <- length( y )                    # total number trials
+data_list_A <- list( y = y, j = j, n_j = n_j, n_t = n_t ,
+                   beta_a = beta_a , beta_b = beta_b , 
+                   gamma_s = gamma_s , gamma_r = gamma_r )
+# Generate MCMC: 
+if ( run_fresh ) { 
+  cmdstan_fit_A <- cmdstan_model_obj$sample(
+    data = data_list_A,
+    chains = 4, iter_warmup = 200, iter_sampling = 5200, seed = 47 )
+  cmdstan_fit_A$save_object( file = paste0(save_file_folder,"/_cmdstan_fit_A.RDS") )
+} else {
+  cmdstan_fit_A <- readRDS( paste0(save_file_folder,"/_cmdstan_fit_A.RDS") )
+}
+# Collect posterior info:
+draws_df_A <- as_draws_df( cmdstan_fit_A ) 
+diag_tbl_A <- summarize_draws_dbda3( draws_df_A ) |>
+  filter( variable != "lp__" & variable != "kappa_minus_two" )
+post_A <- diag_tbl_A |> 
+  filter( variable %in% c("theta[1]","theta[20]","omega","kappa") ) |> 
+  select( c("q2.5","q50","q97.5") )
+A_t1 <- post_A[1,"q50"]
+A_t20 <- post_A[2,"q50"]
+A_omega_eti <- post_A[3,c("q2.5","q97.5")]
+A_kappa <- post_A[4,"q50"]
+
+# Create Data Set B:
+n_ps <- 100 # number flips per subject
+n_jpp <- 1 # number subjects per proportion
+y <- vector()
+# p_vec <- c(3,4,5,6,7)
+p_vec <- c(3,7)
+for ( z_ps in p_vec*10 ) {
+  y <- c( y , rep( c(rep(1,z_ps),rep(0,n_ps-z_ps)) , n_jpp ) )
+}
+j <- rep( 1:(length(p_vec)*n_jpp) , each=n_ps )
+n_j <- length( unique( j ) )          # number of subjects
+n_t <- length( y )                    # total number trials
+data_list_B <- list( y = y, j = j, n_j = n_j, n_t = n_t ,
+                   beta_a = beta_a , beta_b = beta_b , 
+                   gamma_s = gamma_s , gamma_r = gamma_r )
+# Generate MCMC:
+if ( run_fresh ) { 
+  cmdstan_fit_B <- cmdstan_model_obj$sample(
+    data = data_list_B,
+    chains = 4, iter_warmup = 200, iter_sampling = 5200, seed = 47 )
+  cmdstan_fit_B$save_object( file = paste0(save_file_folder,"/_cmdstan_fit_B.RDS") )
+} else {
+  cmdstan_fit_B <- readRDS( paste0(save_file_folder,"/_cmdstan_fit_B.RDS") )
+}
+# Collect posterior info:
+draws_df_B <- as_draws_df( cmdstan_fit_B ) 
+diag_tbl_B <- summarize_draws_dbda3( draws_df_B ) |>
+  filter( variable != "lp__" & variable != "kappa_minus_two" )
+post_B <- diag_tbl_B |> 
+  filter( variable %in% c("theta[1]","theta[2]","omega","kappa") ) |> 
+  select( c("q2.5","q50","q97.5") )
+B_t1 <- post_B[1,"q50"]
+B_t2 <- post_B[2,"q50"]
+B_omega_eti <- post_B[3,c("q2.5","q97.5")]
+B_kappa <- post_B[4,"q50"]
+
+
+# Create Data Set C:
+# mix of large n, small n subjects
+y <- vector() 
+j <- vector()
+#
+y <- c( y , rep( c(rep(1,3),rep(0,10-3)) , 5 ) )
+j <- c( j , rep( 1:5 , each=10 ) )
+y <- c( y , rep( c(rep(1,15),rep(0,50-15)) , 1 ) )
+j <- c( j , rep( 6 , each=50 ) )
+#
+# y <- c( y , rep( c(rep(1,4),rep(0,10-4)) , 5 ) )
+# j <- c( j , rep( max(j)+1:5 , each=10 ) )
+# y <- c( y , rep( c(rep(1,20),rep(0,50-20)) , 1 ) )
+# j <- c( j , rep( max(j)+1 , each=50 ) )
+# #
+# y <- c( y , rep( c(rep(1,5),rep(0,10-5)) , 5 ) )
+# j <- c( j , rep( max(j)+1:5 , each=10 ) )
+# y <- c( y , rep( c(rep(1,25),rep(0,50-25)) , 1 ) )
+# j <- c( j , rep( max(j)+1 , each=50 ) )
+# #
+# y <- c( y , rep( c(rep(1,6),rep(0,10-6)) , 5 ) )
+# j <- c( j , rep( max(j)+1:5 , each=10 ) )
+# y <- c( y , rep( c(rep(1,30),rep(0,50-30)) , 1 ) )
+# j <- c( j , rep( max(j)+1 , each=50 ) )
+#
+y <- c( y , rep( c(rep(1,7),rep(0,10-7)) , 5 ) )
+j <- c( j , rep( max(j)+1:5 , each=10 ) )
+y <- c( y , rep( c(rep(1,35),rep(0,50-35)) , 1 ) )
+j <- c( j , rep( max(j)+1 , each=50 ) )
+#
+n_j <- length( unique( j ) )          # number of subjects
+n_t <- length( y )                    # total number trials
+
+data_list_C <- list( y = y, j = j, n_j = n_j, n_t = n_t ,
+                   beta_a = beta_a , beta_b = beta_b , 
+                   gamma_s = gamma_s , gamma_r = gamma_r )
+# Generate MCMC:
+if ( run_fresh ) { 
+  cmdstan_fit_C <- cmdstan_model_obj$sample(
+    data = data_list_C,
+    chains = 4, iter_warmup = 200, iter_sampling = 5200, seed = 47 )
+  cmdstan_fit_C$save_object( file = paste0(save_file_folder,"/_cmdstan_fit_C.RDS") )
+} else {
+  cmdstan_fit_C <- readRDS( paste0(save_file_folder,"/_cmdstan_fit_C.RDS") )
+}
+# Collect posterior info:
+draws_df_C <- as_draws_df( cmdstan_fit_C ) 
+diag_tbl_C <- summarize_draws_dbda3( draws_df_C ) |>
+  filter( variable != "lp__" & variable != "kappa_minus_two" )
+post_C <- diag_tbl_C |> 
+  filter( variable %in% c("theta[1]","theta[6]","theta[7]","theta[12]","omega","kappa") ) |> 
+  select( c("q2.5","q50","q97.5") )
+C_t1 <- post_C[1,"q50"]
+C_t20 <- post_C[2,"q50"]
+C_omega_eti <- post_C[3,c("q2.5","q97.5")]
+C_kappa <- post_C[4,"q50"]
+```
+
+
+Consider the following two different data sets:
+
+\noindent
+*Data Set A:*
+
+  * 10 subjects with $z=3, n=10$
+  * 10 subjects with $z=7, n=10$
+
+\noindent
+*Data Set B:*
+
+  * 1 subject with $z=30, n=100$
+  * 1 subject with $z=70, n=100$
+
+\noindent
+In both data sets, the total number of flips is 200. In both data sets, half the subjects have 30% heads, and half the subjects have 70% heads.
+If we model these two data sets using the hierarchical model in @fig-dependstructjcoins, will the two data sets yield identical parameter estimates? The answer is *no*. 
+
+
+```{r}
+#| echo: false
+#| warning: FALSE
+#| message: FALSE
+#| label: fig-shrinkage_depends_on_data
+#| fig-cap: "Shrinkage depends on amount of data. Data sets A, B, and C are shown in the top, middle, and bottom panels. Diamonds show $z_j/n_j$ for each individual $j$, with diamond size corresponding to $n_j$. The posterior estimates of the parameters are shown by dots at their median and line segments for the 95% ETI. Notice that shrinkage of $\\theta_j$ is stronger for smaller $n_j$, and the estimate of $\\omega$ is more certain when there are more individuals."
+#| fig-width: 5.5
+#| fig-height: 5.5
+#| fig-pos: "!tb"
+
+
+# collect posterior info for plotting:
+diagA <- diag_tbl_A |> select("variable" | starts_with("q")) |> mutate(set = "A")
+diagB <- diag_tbl_B |> select("variable" | starts_with("q")) |> mutate(set = "B")
+diagC <- diag_tbl_C |> select("variable" | starts_with("q")) |> mutate(set = "C")
+diagAll <- data.frame( rbind( diagA , diagB , diagC ) )
+diagAll$variable <- factor( diagAll$variable, 
+                      levels=c(paste0("theta[",1:20,"]"),"omega","kappa") )
+# collect data info for plotting:
+dataA <- data_list_A |> data.frame() |> group_by( j ) |> 
+  summarize( p = sum(y)/length(y) , n = length(y) ) |> mutate(set = "A")
+dataB <- data_list_B |> data.frame() |> group_by( j ) |> 
+  summarize( p = sum(y)/length(y) , n = length(y) ) |> mutate(set = "B")
+dataC <- data_list_C |> data.frame() |> group_by( j ) |> 
+  summarize( p = sum(y)/length(y) , n = length(y) ) |> mutate(set = "C")
+dataAll <- rbind( dataA, dataB, dataC )
+
+ggplot( data = diagAll |> filter( substr(variable,1,5)=="theta" 
+                                 | substr(variable,1,5)=="omega" ) ) +
+  geom_segment( aes( x=`q2.5` , xend=`q97.5` , y=variable ) , 
+                color=line_color_1 ) +
+  geom_point( aes( x=q50 , y=variable ) , size=2.0 , color=point_color_1 ) +
+  geom_point( data = dataAll , 
+              aes( x=p , y=j , size =  n ) , 
+              show.legend = FALSE ,
+              color=point_color_2 , position = position_nudge(y = -0.0) ,
+              shape = 18 ) +
+  scale_size( n , range=c(2,5) ) +
+  scale_x_continuous( expression(theta[italic(j)]~or~italic(z[j])/italic(n[j])~or~omega), 
+                      breaks = c(0.1, 0.3, 0.5, 0.7, 0.9), 
+                      limits = c(0.05,0.95) ) +  
+  scale_y_discrete("Parameter", labels = ggplot2:::parse_safe) +
+  facet_grid( set ~ . , scales = "free_y" , space = "free_y" ) +
+  theme(axis.text.y = element_text(hjust = 0))
+```
+
+
+<!-- Before running the model on the two data sets, test your intuition: -->
+
+<!--   * In which data set will there be more shrinkage of the estimates of individual subjects?  -->
+<!--   * In which data set will the 95% ETI on $\omega$ be narrower, that is, more precise? -->
+
+Data set A will exhibit more shrinkage of individual parameter estimates toward $\omega$ because there are fewer data (flips) per individual. With less data to anchor each individual estimate, the estimates are more prone to shrinkage toward the group mode. Data set A will also show a narrower credible interval on $\omega$, because there are more subjects informing it, and with higher $\kappa$ (more shrinkage) there is also more certainty about $\omega$.
+In data set B, the estimates of the individual $\theta_j$ will be closer to the data proportions because each individual has more information anchoring the estimate. On the other hand, because there are fewer subjects (and smaller $\kappa$), the estimate of $\omega$ will be less precise.
+
+As shown in @fig-shrinkage_depends_on_data, when data set A is run through the same model as used for the therapeutic-touch example (see @fig-dependstructjcoins), the posterior median estimate of $\theta$ for subjects with $z_j/n_j = 0.3$ is `r round(A_t1,2)` and the posterior median estimate of $\theta$ for subjects with $z_j/n_j = 0.7$ is `r round(A_t20,2)`. 
+The 95% ETI on $\omega$ extends from `r round(A_omega_eti[1],2)` to `r round(A_omega_eti[2],2)`. Although not shown in @fig-shrinkage_depends_on_data, the posterior median estimate of $\kappa$ is `r round(A_kappa,2)`. Of course, all these numerical values are subject to MCMC wobble.
+
+When data set B is run through the same model, @fig-shrinkage_depends_on_data shows that the posterior median estimate of $\theta$ for subjects with $z_j/n_j = 0.3$ is `r round(B_t1,2)` and the posterior median estimate of $\theta$ for subjects with $z_j/n_j = 0.7$ is `r round(B_t2,2)`, and the 95% ETI on $\omega$ extends from `r round(B_omega_eti[1],2)` to `r round(B_omega_eti[2],2)`.
+Although not shown in @fig-shrinkage_depends_on_data, the posterior median estimate of $\kappa$ is `r round(B_kappa,2)`.
+ 
+Thus, shrinkage of $\theta_j$ is greater for the data with smaller $n_j$ per subject; that is, shrinkage of $\theta_j$ is greater for data set A than for data set B. And the uncertainty of $\omega$ (i.e., the width of its ETI) is smaller for the data with more subjects; that is, the group-level mode has more certainty for data set A than for data set B.
+
+Now consider a similar data set with the same total number of flips, the same distribution of proportions overall, but with a mix of subjects with different amounts of data:
+
+\noindent
+*Data Set C:*
+
+  * 5 subjects with $z=3, n=10$, and 1 subject with $z=15, n=50$
+  * 5 subjects with $z=7, n=10$, and 1 subject with $z=35, n=50$
+
+\noindent
+Will all subjects with the same proportion of heads, $z_j/n_j$, have the same estimated underlying probabilities correct, $\theta_j$? The answer is *no*. *Individuals with smaller $n_j$ will be shrunken toward the group mode more than individuals with larger $n_j$* (when their data proportions are the same). @fig-shrinkage_depends_on_data shows the results: The subjects with $n=50$ show less shrinkage than the subjects with $n=10$.
+
+This differential shrinkage is not only mathematically correct, but it also is intuitively reasonable: When we do not have much data about an individual, our best estimate of that individual's ability should be strongly influenced by what is typical of the group we know they are in. Indeed, if we have *no* data from an individual but know the group that individual is in, then our best estimate of their ability is the group's central tendency. With more individual data, our estimate of the individual can shift away from the group central tendency toward the proportion exhibited by the individual.
+
+
+
+### Implications for analysis and design
+
+Differential shrinkage, depending on amount of individual data, can have dramatic implications in real applications. For example, suppose the success of a medical treatment is measured at many different hospitals, with each hospital being an "individual" in a hierarchical model. Some hospitals will have many cases of the treatment, while other hospitals will have far fewer cases. The estimated success rate of a few-cases hospital will be shrunken much more than the estimated success rate of a many-cases hospital. Notice the shrinkage goes toward the mode across hospitals, so individual hospitals with low proportions of success have their estimates shrunken upward, and individual hospitals with high proportions of success have their estimates shrunken downward. 
+
+As another example, consider baseball players, for whom the "batting average" is computed as the number of hits out of number of opportunities at bat. Some players get many opportunities at bat, while other players get relatively few. When estimating a player's batting ability, it makes sense to inform the estimate with what is typical of other players who have the same primary fielding position. So, we use the hierarchical model we have been using throughout this chapter. Consequently, players with only a few opportunities at bat will have their estimates shrunken toward what is typical of their position much more than players with many opportunities at bat. (The Second Edition of this book, @Kruschke2015book, in its Section 9.5.1, had an extended example of batting averages for different positions.)
+
+These characteristics of shrinkage also have important implications for research design. If you have a choice of collecting a small amount of data from many subjects, or a lot of data from a few subjects, your decision should be governed by whether you want accurate estimates of individuals or an accurate estimate of the group overall. If you want accurate estimates of individuals (i.e., $\theta_j$), run more trials per individual. If you want an accurate estimate of the group-level mode (i.e., $\omega$), run more individuals. The issue of sample-size determination will be discussed more in @sec-power, along with so-called "power analysis."
+
+When using a hierarchical (a.k.a., multilevel) model, it is assumed that all individuals really are members of the same meaningful group, and are all representative of that group. This is a semantic and usually causal assumption about the world, insofar as the group assignment indicates some underlying structure in that group that influences all the individuals similarly. 
+Mathematically, the model also assumes that all individuals are "exchangably" drawn from that group, which means that the joint probability of the individual parameters is the same for any ordering of the individuals.
+<!-- ^[For a discussion of exchangeability, see <https://vasishth.github.io/bayescogsci/book/ch-hierarchical.html#exchangeability-and-hierarchical-models>.]  -->
+Exchangeability is a slightly weaker condition than independent and identically distributed *(iid)*, so if the individual parameters are *iid* then they are exchangeable.
+All of these assumptions are in the mathematical expression that says the individual abilities are generated from a beta distribution: for all $j$, $\theta_j \sim \mbox{beta}(\omega,\kappa)$ (see the full expression in Eqn. \ref{eq:tt_theta}). The point is that this mathematical description makes strong assumptions that should reflect meaningful structure in the world.
+
+If the assumed grouping is not usefully reflective of real patterns in the data, then the shrinkage induced by the grouping could be spurious and misleading. As just one example, consider again the estimation of a baseball player's batting average. If the player is grouped with pitchers, their estimated batting average will be shrunken toward what is typical of pitchers, and if the player is grouped with catchers, their estimated batting average will be shrunken toward what is typical of catchers. It turns out that catchers in general have much higher batting averages than pitchers in general, because pitchers are highly specialized and are not trained to be strong batters. Therefore, a player's estimated batting average will depend strongly on their assumed group.
+
+In typical applications of hierarchical models, each individual's group assignment is provided by the data or design. For example, the practitioners in the therapeutic-touch data were all established and experienced at the same hospital, and therefore it is reasonable to treat their abilities as mutually informative. As another example, in professional baseball most players have an established primary  position (though fielders sometimes change position). And in experimental designs, the group is determined by the manipulated condition of the experiment. However, in situations where the grouping is not clear, it might be possible to extract clusters of similar individuals from the data. Clustering models can be nuanced and challenging, and we will not explore them in this book; for a review see @Wade2023ClusterAnalysis.
+
+
+
+<!-- **Memo to me: Also consider relating shrinkage to frequentist estimation** a la Stein's paradox; see <https://www.scientificamerican.com/article/steins-paradox-in-statistics/> and <https://solomonkurz.netlify.app/blog/2019-02-23-stein-s-paradox-and-what-partial-pooling-can-do-for-you/> -->
+<!-- Decision: I will not mention Stein's paradox because it is a frequentist concept, and would demand an explanation of sampling distributions and expected values as estimators, etc. Too far afield. -->
+
+
+<!-- ## Expanding the hierarchy to multiple mints -->
+
+<!-- **Fun as the baseball example is, I'm seriously condsidering omitting it, because it's mostly more of the same...** It doesn't really add a lot conceptually. Mostly it would be useful for *introducing the binomial likelihood*, beyond the bernoulli likelihood. But that could be done later in the chapter on logistic regression... -->
+
+## Exercises
+
+```{r}
+#| echo: FALSE
+# Initialize global variables for exercise number and part:
+exNum <- 0
+exPrt <- 0
+exNew = function( ){
+  exNum <<- exNum+1 # increment global value
+  exPrt <<- 0 # reset global value
+  return(exNum)
+}
+exPart = function( ){
+  exPrt <<- exPrt+1 # increment global value
+  return(LETTERS[exPrt])
+}
+```
+
+
+<!-- ------------------------------------------------------------------ -->
+\vspace{1ex}\noindent
+**Exercise [-@sec-Hierarchical].`r exNew()`.**
+*Purpose: Reproduce the therapeutic-touch analysis.*  
+
+Reproduce the analysis of therapeutic-touch data from @sec-therap_touch_in_stan. The data are in package dbda3. 
+
+Extract the MCMC draws and compute diagnostics. Display a *complete* table of the MCMC diagnostics for the parameters. How many parameters are there? (Answer: 30.)
+
+
+<!-- ------------------------------------------------------------------ -->
+\vspace{1ex}\noindent
+**Exercise [-@sec-Hierarchical].`r exNew()`.**
+*Purpose: See the influence of the prior on shrinkage, as in @fig-shrinkage_kappa.*  
+
+Re-run the therapeutic touch example with two different priors on $\kappa$. 
+The only thing to change in each run is the specification of the gamma shape and rate:
+```{r}
+#| eval: false
+gamma_sr <- gamma_s_r_from_mode_sd(mode = 1, sd = 20)  # Change this
+gamma_s <- gamma_sr$shape
+gamma_r <- gamma_sr$rate
+```
+\noindent Be sure to assemble that into the `data_list` before re-running the sampling of Stan. There is no need to re-compile the model.
+
+**Part `r exPart()`.**
+In one run, set gamma `mode = 0.5` and `sd = 0.5`.
+Be sure to generate the *prior* distribution in addition to the posterior.
+
+**Part `r exPart()`.**
+In another run, set gamma `mode = 10` and `sd = 100`.
+Be sure to generate the *prior* distribution in addition to the posterior.
+
+**Part `r exPart()`.**
+Discuss the effect of the prior on the shrinkage of $\theta_j$. Are your results for $\theta_1$ and $\theta_{28}$ similar to what is displayed in @fig-shrinkage_kappa? (They should be.)
+
+
+<!-- ------------------------------------------------------------------ -->
+\vspace{1ex}\noindent
+**Exercise [-@sec-Hierarchical].`r exNew()`.**
+*Purpose: Write up a concise but thorough report of the therapeutic-touch analysis, respecting the BARG [@Kruschke2021BARG] in @sec-barg.*
+
+This is best done in Quarto or R Markdown, to make the code fully reproducible. If you write reports of your analyses, learning about Quarto or R Markdown will prove to be extremely useful.
+
+
+<!-- ------------------------------------------------------------------ -->
+\vspace{1ex}\noindent
+**Exercise [-@sec-Hierarchical].`r exNew()`.**
+*Purpose: Explore how amount of data affects shrinkage.*  
+
+@sec-shrinkage_data presented three data sets and discussed how their estimates would be affected by shrinkage. Run each of those data sets through the hierarchical model used for the therapeutic-touch data. There is no need to recompile the model.
+
+*Hint:* The three data sets are included in the dbda3 package as `set_a`, `set_b`, and `set_c`. For example,
+```{r}
+dbda3::set_a |> str()
+```
+\noindent Assemble the data into the `data_list` that is input to the sampling function.
+
+
+
+<!-- ------------------------------------------------------------------ -->
+<!-- \vspace{1ex}\noindent -->
+<!-- **Exercise [-@sec-Hierarchical].`r exNew()`.** -->
+<!-- *Purpose: ...*   -->
+
+
+<!-- **Part `r exPart()`.** -->
+<!-- Text text text... -->
+
