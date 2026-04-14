@@ -101,7 +101,8 @@ ggplot( z_df , aes(x = theta_obs )) +
   #               fill=fill_color_1, color=fill_color_1 ) + 
   geom_histogram(
     aes(y = after_stat(density)),
-    binwidth = 0.1, boundary = 0, fill = fill_color_2
+    fill = fill_color_1, color=border_color_1,
+    breaks = seq( 0-(1/(n_each*2)) , 1+(1/(n_each*2)) , by=1/n_each )
   ) + 
   geom_line( data=beta_df, aes( x = x, y = y ) , 
              color=line_color_1, linewidth=1 ) +
@@ -214,7 +215,7 @@ Therapeutic touch is a nursing technique in which the practitioner manually mani
 #| message: FALSE
 #| label: fig-TherapeuticTouchApparData
 #| fig-cap: "Data from the therapeutic-touch experiment of @RosaRSB1998. This histogram will be modeled like the histogram in @fig-gen_model_data."
-#| fig-width: 3.5
+#| fig-width: 3.0
 #| fig-asp: 0.7
 #| fig-pos: "!tbh"
 
@@ -233,8 +234,11 @@ z_df <- data.frame( z=z , n=n , p=z/n )
 
 ggplot( z_df , aes(x = p )) +
   geom_histogram(
-    binwidth = 0.1, boundary = 0, fill = fill_color_2) + 
-  scale_x_continuous( breaks = 0:5 / 5, limits = 0:1 ) +
+    aes(y = after_stat(count)),
+    fill = fill_color_1,
+    breaks = seq( 0-(1/(n_each*2)) , 1+(1/(n_each*2)) , by=1/n_each )
+  ) + 
+  scale_x_continuous( breaks=seq( 0 , 1 , by=2/n_each ) ) +
   labs(x = "Proportion correct" , y = "# Practitioners" )
 ```
 
@@ -1039,7 +1043,7 @@ cmdstan_mo_prior <- cmdstan_model(
   dir = save_file_folder)
 ```
 
-Unfortunately, Stan's HMC algorithm does not do well with very flat distributions, such as what we have specified for $\omega$. Because HMC does not explore flat priors well, we will have to run very long chains. For running long chains, it can help to run parallel cores on your computer; e.g., `options(mc.cores = min(c(4, detectCores())))`. Moreover, because the chains will be very highly autocorrelated, we will "thin" the chains and not store every step. This thinning reduces the amount of information retained, but greatly reduces the size of the stored MCMC chain. Therefore we have specified the `thin` argument, below, to be greater than its default value of 1.
+Unfortunately, Stan's HMC algorithm does not do well with very flat distributions, such as what we have specified for $\omega$. Because HMC does not explore flat priors well, we will have to run very long chains. For running long chains, it can help to run parallel cores on your computer; e.g., `options(mc.cores = min(c(4, parallel::detectCores())))`. Moreover, because the chains will be very highly autocorrelated, we will "thin" the chains and not store every step. This thinning reduces the amount of information retained, but greatly reduces the size of the stored MCMC chain. Therefore we have specified the `thin` argument, below, to be greater than its default value of 1.
 ```{r}
 #| eval: false
 cmdstan_fit_prior <- cmdstan_mo_prior$sample(
@@ -1767,7 +1771,7 @@ If we model these two data sets using the hierarchical model in @fig-dependstruc
 #| message: FALSE
 #| label: fig-shrinkage_depends_on_data
 #| fig-cap: "Shrinkage depends on amount of data. Data sets A, B, and C are shown in the top, middle, and bottom panels. Diamonds show $z_j/n_j$ for each individual $j$, with diamond size corresponding to $n_j$. The posterior estimates of the parameters are shown by dots at their median and line segments for the 95% ETI. Notice that shrinkage of $\\theta_j$ is stronger for smaller $n_j$, and the estimate of $\\omega$ is more certain when there are more individuals."
-#| fig-width: 6.5
+#| fig-width: 5.5
 #| fig-height: 5.5
 #| fig-pos: "!tb"
 
@@ -1800,10 +1804,8 @@ ggplot( data = diagAll |> filter( substr(variable,1,5)=="theta"
               shape = 18 ) +
   scale_size( n , range=c(2,5) ) +
   scale_x_continuous( expression(theta[italic(j)]~or~italic(z[j])/italic(n[j])~or~omega), 
-                      # breaks = c(0.1, 0.3, 0.5, 0.7, 0.9), 
-                      # limits = c(0.05,0.95) 
-                      breaks = c(0, 0.3, 0.5, 0.7, 1), limits = 0:1
-                      ) +  
+                      breaks = c(0.1, 0.3, 0.5, 0.7, 0.9), 
+                      limits = c(0.05,0.95) ) +  
   scale_y_discrete("Parameter", labels = ggplot2:::parse_safe) +
   facet_grid( set ~ . , scales = "free_y" , space = "free_y" ) +
   theme(axis.text.y = element_text(hjust = 0))
